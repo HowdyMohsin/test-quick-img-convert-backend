@@ -90,10 +90,23 @@ def test_seeded_plan_limits(env_client):
         "daily": 25, "batch": 10, "img_mb": 200, "aud_mb": 100,
         "vid_mb": 500, "vid_min": 30, "parallel": 2, "priority": False, "ads": True,
         "editor": False,
+        "gps_remover": False, "compare": False, "batch_rename": False, "target_size": False,
     }
     assert plans["anonymous"]["limits"]["editor"] is False
     assert plans["basic"]["limits"]["editor"] is True
     assert plans["pro"]["limits"]["editor"] is True
+    assert plans["free"]["limits"]["gps_remover"] is False
+    assert plans["free"]["limits"]["compare"] is False
+    assert plans["free"]["limits"]["batch_rename"] is False
+    assert plans["free"]["limits"]["target_size"] is False
+    assert plans["basic"]["limits"]["gps_remover"] is True
+    assert plans["basic"]["limits"]["compare"] is True
+    assert plans["basic"]["limits"]["batch_rename"] is True
+    assert plans["basic"]["limits"]["target_size"] is True
+    assert plans["pro"]["limits"]["gps_remover"] is True
+    assert plans["pro"]["limits"]["compare"] is True
+    assert plans["pro"]["limits"]["batch_rename"] is True
+    assert plans["pro"]["limits"]["target_size"] is True
     assert plans["basic"]["price_cents"] == 400
     assert plans["basic"]["price_yearly_cents"] == 4000
     assert plans["basic"]["limits"]["daily"] == 100

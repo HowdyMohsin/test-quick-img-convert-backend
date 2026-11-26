@@ -316,6 +316,16 @@ def normalize_settings(to_slug: str, settings: dict | None) -> dict:
     # slowest, same pixels) and FLAC compression_level.
     if "compression" in merged:
         merged["compression"] = max(0, min(9, int(merged["compression"])))
+    # Target file size (KB): the converter lowers quality until the output
+    # fits, never below quality 10. A non-integer or out-of-range value is
+    # dropped instead of failing the conversion.
+    if "target_size_kb" in merged:
+        try:
+            merged["target_size_kb"] = max(1, min(102400, int(merged["target_size_kb"])))
+        except (TypeError, ValueError):
+            del merged["target_size_kb"]
+    if "strip_gps" in merged:
+        merged["strip_gps"] = bool(merged["strip_gps"])
     return merged
 
 
@@ -410,6 +420,27 @@ def _flatten(img: Image.Image, settings: dict) -> Image.Image:
     return img.convert("RGB")
 
 
+GPS_IFD_TAG = 0x8825  # EXIF GPS IFD pointer
+
+
+def _exif_without_gps(exif_bytes: bytes) -> bytes:
+    """EXIF bytes with only the GPS IFD removed; every other tag kept.
+
+    Used when the user keeps metadata but wants the location gone (the
+    "Remove GPS location" setting). If parsing fails, the original bytes
+    come back unchanged — GPS removal must never break a conversion.
+    """
+    try:
+        exif = Image.Exif()
+        exif.load(exif_bytes)
+        if GPS_IFD_TAG in exif:
+            del exif[GPS_IFD_TAG]
+            return exif.tobytes()
+        return exif_bytes
+    except Exception:  # noqa: BLE001 - keep original EXIF on any failure
+        return exif_bytes
+
+
 def _encode_raster_image(img: Image.Image, to_slug: str, settings: dict,
                          dst: Path, frames: list[Image.Image] | None = None) -> dict:
     """Encode an already-loaded Pillow image. Returns output info."""
@@ -429,6 +460,8 @@ def _encode_raster_image(img: Image.Image, to_slug: str, settings: dict,
         if not settings.get("strip_metadata", True):
             exif = img.info.get("exif")
             if exif:
+                if settings.get("strip_gps"):
+                    exif = _exif_without_gps(exif)
                 save_kwargs["exif"] = exif
     elif to_slug == "webp":
         save_kwargs = {"quality": quality, "method": 6}
@@ -444,6 +477,8 @@ def _encode_raster_image(img: Image.Image, to_slug: str, settings: dict,
         if not settings.get("strip_metadata", True):
             exif = img.info.get("exif")
             if exif:
+                if settings.get("strip_gps"):
+                    exif = _exif_without_gps(exif)
                 save_kwargs["exif"] = exif
     elif to_slug == "gif":
         if frames:
@@ -469,6 +504,47 @@ def _encode_raster_image(img: Image.Image, to_slug: str, settings: dict,
             "quality": quality if to_slug in ("jpg", "webp", "avif") else None}
 
 
+def _fit_target_size(encode_to, dst: Path, target_bytes: int, start_quality: int) -> int:
+    """Encode at the highest quality whose output fits target_bytes.
+
+    Binary search over [10, start_quality]: one attempt at the requested
+    quality, one at the floor, then ~7 halvings. Every attempt writes to
+    a temp file; only the best is copied to dst. If even quality 10 does
+    not fit, quality 10 is used and the caller reports the real (larger)
+    size — the number is never faked. Returns the quality used.
+    """
+    import shutil
+    import tempfile
+
+    start_quality = max(10, min(100, int(start_quality)))
+    target_bytes = max(1, int(target_bytes))
+    with tempfile.TemporaryDirectory(prefix="qic-target-") as td:
+        td = Path(td)
+
+        def attempt(q: int, name: str) -> tuple[int, Path]:
+            p = td / name
+            encode_to(q, p)
+            return p.stat().st_size, p
+
+        size, first = attempt(start_quality, "start")
+        if size <= target_bytes:
+            shutil.copyfile(first, dst)
+            return start_quality
+        _floor_size, floor_path = attempt(10, "floor")
+        best_q, best_path = 10, floor_path
+        if _floor_size <= target_bytes:
+            lo, hi = 10, start_quality
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                mid_size, mid_path = attempt(mid, f"q{mid}")
+                if mid_size <= target_bytes:
+                    lo, best_q, best_path = mid, mid, mid_path
+                else:
+                    hi = mid
+        shutil.copyfile(best_path, dst)
+        return best_q
+
+
 def _convert_raster_vips(src: Path, to_slug: str, settings: dict, dst: Path) -> dict:
     """pyvips path; raises on any failure so the caller falls back to Pillow."""
     import pyvips
@@ -481,6 +557,20 @@ def _convert_raster_vips(src: Path, to_slug: str, settings: dict, dst: Path) -> 
     if to_slug in ("jpg", "bmp"):
         if img.hasalpha():
             img = img.flatten(background=_background_rgb(settings))
+    # Metadata: libvips keeps EXIF by default, so strip_metadata was
+    # silently ignored on this path. Honour it here (strip everything),
+    # and honour strip_gps on its own: drop only the GPS IFD fields
+    # (exif-ifd3-*), keep the rest of the metadata.
+    strip_all = bool(settings.get("strip_metadata", True))
+    if not strip_all and settings.get("strip_gps"):
+        for field in list(img.get_fields()):
+            if field.startswith("exif-ifd3-"):
+                try:
+                    result = img.remove(field)
+                    if result is not None:
+                        img = result
+                except Exception:  # noqa: BLE001 - a field that cannot go stays
+                    pass
     write_opts: dict = {}
     if to_slug == "jpg":
         write_opts = {"Q": quality, "interlace": bool(settings.get("progressive", True))}
@@ -490,6 +580,15 @@ def _convert_raster_vips(src: Path, to_slug: str, settings: dict, dst: Path) -> 
         write_opts = {"Q": quality, "effort": int(settings.get("speed", 6))}
     elif to_slug == "png":
         write_opts = {"compression": int(settings.get("compression", 6))}
+    if strip_all and to_slug in ("jpg", "webp", "avif", "png", "tiff"):
+        write_opts["strip"] = True
+    target_kb = settings.get("target_size_kb")
+    if target_kb and to_slug in ("jpg", "webp", "avif"):
+        used = _fit_target_size(
+            lambda q, p: img.write_to_file(str(p), **{**write_opts, "Q": q}),
+            dst, int(target_kb) * 1024, quality)
+        return {"format": to_slug, "width": img.width, "height": img.height,
+                "quality": used, "engine_used": "vips"}
     img.write_to_file(str(dst), **write_opts)
     return {"format": to_slug, "width": img.width, "height": img.height,
             "quality": quality, "engine_used": "vips"}
@@ -534,6 +633,16 @@ def _convert_raster(src: Path, to_slug: str, settings: dict, dst: Path) -> dict:
         info["engine_used"] = "pillow"
         return info
     img = _resize_image(img, settings)
+    # Target file size (lossy stills only — animated webp/gif targets
+    # skip it, their size is set by the frame count, not the quality).
+    target_kb = settings.get("target_size_kb")
+    if target_kb and to_slug in ("jpg", "webp", "avif"):
+        quality = int(settings.get("quality", TARGET_DEFAULTS.get(to_slug, {}).get("quality", 85)))
+        used = _fit_target_size(
+            lambda q, p: _encode_raster_image(img, to_slug, {**settings, "quality": q}, p),
+            dst, int(target_kb) * 1024, quality)
+        return {"format": to_slug, "width": img.size[0], "height": img.size[1],
+                "quality": used, "engine_used": "pillow"}
     info = _encode_raster_image(img, to_slug, settings, dst)
     info["engine_used"] = "pillow"
     return info

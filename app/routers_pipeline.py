@@ -293,6 +293,17 @@ async def upload_file(request: Request, file: UploadFile = File(...),
 async def convert(request: Request, body: ConvertBody,
                   owner: dict = Depends(_resolve_owner)):
     store = get_store(request)
+    # Plan-gated conversion settings (backstop for the UI gating): a plan
+    # without the flag cannot smuggle the option through the API.
+    _settings = body.settings or {}
+    if _settings.get("strip_gps") and not owner["limits"].get("gps_remover", False):
+        return error_response(PipelineError(
+            "feature_locked", "Removing GPS location needs Basic or Pro.",
+            "See /pricing to upgrade", status=403))
+    if _settings.get("target_size_kb") and not owner["limits"].get("target_size", False):
+        return error_response(PipelineError(
+            "feature_locked", "Target file size needs Basic or Pro.",
+            "See /pricing to upgrade", status=403))
     try:
         # Sync store, off the event loop (see the upload endpoint).
         job = await asyncio.to_thread(
@@ -422,6 +433,19 @@ async def editor_access_endpoint(owner: dict = Depends(_resolve_owner)):
     # users and _anonymous_limits for anonymous visitors).
     return {"plan": owner["plan"],
             "editor_allowed": bool(owner["limits"].get("editor", False))}
+
+
+@router.get("/features")
+async def features_endpoint(owner: dict = Depends(_resolve_owner)):
+    """Plan-gated converter features, same limits-dict pattern as the
+    editor lock: GPS remover, compare slider, batch rename, target size.
+    Anonymous and free get them off; basic and pro get them on — the admin
+    can flip each per plan from Plans (limits)."""
+    limits = owner["limits"]
+    return {"gps_remover": bool(limits.get("gps_remover", False)),
+            "compare": bool(limits.get("compare", False)),
+            "batch_rename": bool(limits.get("batch_rename", False)),
+            "target_size": bool(limits.get("target_size", False))}
 
 
 @router.get("/editor/file/{upload_id}")
