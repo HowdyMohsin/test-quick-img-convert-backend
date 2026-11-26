@@ -825,6 +825,33 @@ def delete_upload(store, owner_key: str, upload_id: str) -> None:
     store.delete_upload(upload_id)
 
 
+def reassign_owner(store, old_key: str, new_key: str, user_id: str | None = None) -> int:
+    """Move every upload and job owned by ``old_key`` to ``new_key``.
+
+    Used when a guest signs in: files uploaded while signed out belong
+    to the device key, and the first convert after sign-in would
+    otherwise fail with "This upload belongs to someone else." because
+    the owner key switched to ``user:<id>``. Jobs move too (and get the
+    user's id) so the account history shows them. Quota rows are NOT
+    moved — the guest's consumed quota stays on the device key and the
+    signed-in quota starts fresh. Runs through the stores' public
+    methods, so MemoryStore and DbStore behave the same. Returns the
+    number of records moved.
+    """
+    moved = 0
+    for up in store.list_uploads(old_key):
+        up.owner_key = new_key
+        store.save_upload(up)
+        moved += 1
+    for job in store.list_jobs(old_key):
+        job.owner_key = new_key
+        if user_id is not None:
+            job.user_id = user_id
+        store.save_job(job)
+        moved += 1
+    return moved
+
+
 # --- conversions ---------------------------------------------------------------
 def create_conversion(store, owner_key: str, plan: str, upload_id: str,
                       to_slug: str, settings: dict | None = None,

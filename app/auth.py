@@ -12,6 +12,7 @@ Banning revokes all sessions.
 
 from __future__ import annotations
 
+import logging
 import secrets
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -42,6 +43,8 @@ from .deps import (
     require_csrf,
 )
 from .models import AuthIdentity, EmailOtp, EmailToken, Notification, Session, User
+from .pipeline import get_default_store, reassign_owner
+from .quotas import device_owner_key, get_or_create_device_id, user_owner_key
 from .rate_limit import (
     ip_key,
     login_locked,
@@ -49,6 +52,8 @@ from .rate_limit import (
     record_auth_attempt,
 )
 from .security import hash_email, mask_ip
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
@@ -157,6 +162,29 @@ async def create_session(
     db.add(session)
     await db.commit()
     return token, session
+
+
+def _adopt_device_uploads(request: Request, user: User) -> None:
+    """Move this browser's guest uploads/jobs to the just-signed-in user.
+
+    A guest's files belong to the device key (``device:<id>`` from the
+    signed ``qic_device`` cookie); after sign-in the owner key becomes
+    ``user:<id>``, so converting a guest upload would fail with "This
+    upload belongs to someone else." Adopting the rows at sign-in keeps
+    the upload working. Best-effort: a failure here must never break
+    sign-in — the user can always re-upload, but the common case
+    (upload as guest, then sign in to convert) must keep working.
+    """
+    try:
+        device_id, is_new = get_or_create_device_id(request)
+        if is_new:
+            return  # no device cookie yet — nothing was uploaded as guest
+        store = getattr(request.app.state, "pipeline_store", None) or get_default_store()
+        moved = reassign_owner(store, device_owner_key(device_id), user_owner_key(user.id), user_id=user.id)
+        if moved:
+            log.info("adopted %d guest records for user %s", moved, user.id)
+    except Exception:  # noqa: BLE001 - adoption must never break sign-in
+        log.warning("adopting guest uploads failed", exc_info=True)
 
 
 def set_session_cookie(response: Response, token: str | None, remember: bool) -> None:
@@ -382,6 +410,7 @@ async def register(
     await record_auth_attempt(db, "register", email, ip, True)
     token, sess = await create_session(db, user, request, body.remember_me)
     set_session_cookie(response, token, body.remember_me)
+    _adopt_device_uploads(request, user)
     await add_notification(
         db, user.id, "welcome",
         "Welcome to Quick IMG Convert",
@@ -455,6 +484,7 @@ async def login(
     await db.commit()
     token, _sess = await create_session(db, user, request, body.remember_me)
     set_session_cookie(response, token, body.remember_me)
+    _adopt_device_uploads(request, user)
     return {"user": _public_user(user), "message": "Signed in."}
 
 
@@ -552,6 +582,7 @@ async def google_signin(
         )
     token, _sess = await create_session(db, user, request, body.remember_me)
     set_session_cookie(response, token, body.remember_me)
+    _adopt_device_uploads(request, user)
     return {"user": _public_user(user), "message": "Signed in with Google."}
 
 

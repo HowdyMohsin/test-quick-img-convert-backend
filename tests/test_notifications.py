@@ -34,6 +34,12 @@ def client():
     from app.deps import reset_settings
 
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{DB_PATH}"
+    # SITE_URL must be http here: the code default is the https Vercel
+    # URL, which makes is_https True, which marks every cookie secure —
+    # and a secure cookie is never sent back over the TestClient's
+    # http://testserver, so CSRF/session flows fail (same pattern as
+    # test_auth.py).
+    os.environ["SITE_URL"] = "http://localhost:3000"
     reset_settings()
     app = create_app()
     with TestClient(app, raise_server_exceptions=False) as c:
@@ -41,6 +47,7 @@ def client():
     if os.path.exists(DB_PATH):
         os.remove(DB_PATH)
     os.environ.pop("DATABASE_URL", None)
+    os.environ.pop("SITE_URL", None)
     reset_settings()
 
 
