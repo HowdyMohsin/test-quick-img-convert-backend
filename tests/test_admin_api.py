@@ -248,6 +248,47 @@ def test_settings_general_and_limits(client):
     assert resp.json()["retention_hours"] == 48
 
 
+def test_settings_aggregate_endpoint(client):
+    # The admin General/Limits pages call the single /admin/settings
+    # endpoint (previously missing -> 404); it merges general + limits
+    # and accepts the pages' field names (quota_timezone, max_batch,
+    # max_file_mb) as aliases of the canonical keys.
+    login_super(client)
+    headers = csrf_headers(client)
+    resp = client.get("/admin/settings")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["quota_tz"] == "Asia/Karachi"
+    assert resp.json()["quota_timezone"] == "Asia/Karachi"
+    assert resp.json()["retention_hours"] == 24
+    assert resp.json()["approval_window_hours"] == 24
+    resp = client.patch(
+        "/admin/settings",
+        json={"quota_timezone": "Europe/London", "max_batch": 50,
+              "max_file_mb": 1024, "approval_window_hours": 12},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["quota_tz"] == "Europe/London"
+    assert body["quota_timezone"] == "Europe/London"
+    assert body["max_batch_files"] == 50
+    assert body["max_batch"] == 50
+    assert body["max_upload_mb"] == 1024
+    assert body["max_file_mb"] == 1024
+    assert body["approval_window_hours"] == 12
+    # The section endpoints read the same canonical keys.
+    resp = client.get("/admin/settings/general")
+    assert resp.json()["quota_tz"] == "Europe/London"
+    resp = client.get("/admin/settings/limits")
+    assert resp.json()["max_batch_files"] == 50
+    assert resp.json()["max_upload_mb"] == 1024
+    # Validation mirrors the section endpoints.
+    resp = client.patch("/admin/settings", json={"pkr_per_usd": -1}, headers=headers)
+    assert resp.status_code == 422
+    resp = client.patch("/admin/settings", json={"quota_timezone": "Not/AZone"}, headers=headers)
+    assert resp.status_code == 422
+
+
 def test_settings_email_placeholders_and_smtp_check_shape(client):
     login_super(client)
     headers = csrf_headers(client)

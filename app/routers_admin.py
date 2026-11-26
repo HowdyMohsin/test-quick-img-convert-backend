@@ -1312,6 +1312,136 @@ def _settings_snapshot(db_values: dict, keys) -> dict:
     return {k: db_values.get(k) for k in keys}
 
 
+# The admin Settings pages (General, Limits) call the single aggregate
+# endpoint GET/PATCH /admin/settings; the section endpoints below
+# (/settings/general, /settings/limits, ...) are the same data split by
+# section. The aggregate merges the general + limits keys and accepts the
+# field names the admin pages send, which differ from the canonical
+# storage keys in three places (see _SETTINGS_ALIASES): the pages send
+# `quota_timezone` (stored as `quota_tz`), `max_batch` (stored as
+# `max_batch_files`) and `max_file_mb` (stored as `max_upload_mb`).
+# `approval_window_hours` is stored as its own site_settings row (the
+# seed supplies it); the runtime still reads the APPROVAL_WINDOW_HOURS
+# env var, so changing it here only affects what the panel shows until
+# the runtime is moved to the stored value.
+_SETTINGS_ALIASES = {
+    "quota_timezone": "quota_tz",
+    "max_batch": "max_batch_files",
+    "max_file_mb": "max_upload_mb",
+}
+
+
+class AllSettingsBody(BaseModel):
+    site_name: Optional[str] = None
+    site_url: Optional[str] = None
+    support_email: Optional[str] = None
+    pkr_per_usd: Optional[float] = None
+    quota_tz: Optional[str] = None
+    quota_timezone: Optional[str] = None
+    approval_window_hours: Optional[int] = None
+    approval_window_text: Optional[str] = None
+    maintenance_mode: Optional[bool] = None
+    admin_ip_allowlist: Optional[list] = None
+    retention_hours: Optional[int] = None
+    upload_rate_per_min: Optional[int] = None
+    convert_rate_per_min: Optional[int] = None
+    max_upload_mb: Optional[int] = None
+    max_batch_files: Optional[int] = None
+    max_batch: Optional[int] = None
+    max_file_mb: Optional[int] = None
+
+
+async def _all_settings(db: AsyncSession) -> dict:
+    values: dict = {}
+    for key in GENERAL_SETTING_KEYS:
+        values[key] = await _get_setting(db, key)
+    for key in LIMITS_SETTING_KEYS:
+        values[key] = await _get_setting(db, key)
+    if values.get("site_name") is None:
+        values["site_name"] = "Quick IMG Convert"
+    if values.get("pkr_per_usd") is None:
+        values["pkr_per_usd"] = float(os.environ.get("PKR_PER_USD", "0") or 0) or None
+    if values.get("quota_tz") is None:
+        # The seed stores this under `quota_timezone`; accept that row too.
+        values["quota_tz"] = await _get_setting(db, "quota_timezone")
+    if values.get("quota_tz") is None:
+        values["quota_tz"] = os.environ.get("QUOTA_TZ", "Asia/Karachi")
+    if values.get("maintenance_mode") is None:
+        values["maintenance_mode"] = False
+    if values.get("retention_hours") is None:
+        values["retention_hours"] = int(os.environ.get("RETENTION_HOURS", "24"))
+    # Aliases the admin pages read.
+    values["quota_timezone"] = values.get("quota_tz")
+    values["max_batch"] = values.get("max_batch_files")
+    values["max_file_mb"] = values.get("max_upload_mb")
+    approval_hours = await _get_setting(db, "approval_window_hours")
+    values["approval_window_hours"] = (
+        approval_hours
+        if approval_hours is not None
+        else int(os.environ.get("APPROVAL_WINDOW_HOURS", "24"))
+    )
+    return values
+
+
+@router.get("/settings")
+async def get_all_settings(
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin("settings", "read")),
+):
+    return await _all_settings(db)
+
+
+@router.patch("/settings")
+async def patch_all_settings(
+    body: AllSettingsBody,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin("settings", "write")),
+    _csrf: bool = Depends(require_csrf),
+):
+    before = await _all_settings(db)
+    data = body.model_dump(exclude_unset=True)
+    # Canonicalise the admin pages' field names.
+    for alias, canonical in _SETTINGS_ALIASES.items():
+        if alias in data:
+            if canonical not in data:
+                data[canonical] = data.pop(alias)
+            else:
+                data.pop(alias)
+    if "pkr_per_usd" in data and data["pkr_per_usd"] is not None and data["pkr_per_usd"] <= 0:
+        raise admin_error(422, "invalid_setting", "pkr_per_usd must be greater than zero.",
+                          "Enter a positive exchange rate.")
+    if data.get("quota_tz"):
+        try:
+            ZoneInfo(data["quota_tz"])
+        except Exception:
+            raise admin_error(422, "invalid_setting",
+                              f"'{data['quota_tz']}' is not a valid timezone.",
+                              "Use an IANA timezone name such as Asia/Karachi.")
+    if "admin_ip_allowlist" in data and data["admin_ip_allowlist"] is not None:
+        for entry in data["admin_ip_allowlist"]:
+            try:
+                import ipaddress as _ip
+
+                _ip.ip_network(str(entry), strict=False)
+            except ValueError:
+                raise admin_error(422, "invalid_setting",
+                                  f"'{entry}' is not a valid IP or CIDR range.",
+                                  "Use an IP address or CIDR range.")
+    for key in ("retention_hours", "upload_rate_per_min", "convert_rate_per_min",
+                "max_upload_mb", "max_batch_files", "approval_window_hours"):
+        if key in data and data[key] is not None and data[key] < 0:
+            raise admin_error(422, "invalid_setting", f"{key} cannot be negative.",
+                              "Enter zero or a positive number.")
+    for key, value in data.items():
+        await _set_setting(db, key, value)
+    after = await _all_settings(db)
+    await audit_log_write(db, admin.email, "settings.all", "all",
+                          diff_dicts(before, after), after, _client_ip(request))
+    await db.commit()
+    return after
+
+
 @router.get("/settings/general")
 async def get_general_settings(
     db: AsyncSession = Depends(get_db),
