@@ -55,7 +55,32 @@ def validate_popup(data: dict) -> dict:
     return cleaned
 
 
+def _schedule_window(popup: Any) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Start/end window for a popup. The Popup model stores the window in
+    its ``schedule`` JSON column ({"start": ..., "end": ...}) — there are
+    no schedule_start/schedule_end columns."""
+    schedule = getattr(popup, "schedule", None) or {}
+    if not isinstance(schedule, dict):
+        return None, None
+    start = schedule.get("start") or schedule.get("schedule_start")
+    end = schedule.get("end") or schedule.get("schedule_end")
+    return _coerce_dt(start), _coerce_dt(end)
+
+
+def _coerce_dt(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def popup_payload(popup: Any) -> dict:
+    start, end = _schedule_window(popup)
     return {
         "key": popup.key,
         "enabled": popup.enabled,
@@ -64,8 +89,8 @@ def popup_payload(popup: Any) -> dict:
         "cta_text": popup.cta_text,
         "cta_href": popup.cta_href,
         "frequency": popup.frequency,
-        "schedule_start": popup.schedule_start.isoformat() if popup.schedule_start else None,
-        "schedule_end": popup.schedule_end.isoformat() if popup.schedule_end else None,
+        "schedule_start": start.isoformat() if start else None,
+        "schedule_end": end.isoformat() if end else None,
         "pages": popup.pages,
     }
 
@@ -98,7 +123,7 @@ async def get_marketing_payload(db, models, *, page: str = "/") -> dict:
     from app.ads import get_consent_config, get_consent_settings
     now = datetime.now(timezone.utc)
     popups = (await db.execute(
-        select(models.Popup).order_by(models.Popup.sort)
+        select(models.Popup).order_by(models.Popup.key)
     )).scalars().all()
     popup_list = []
     for p in popups:
@@ -106,7 +131,8 @@ async def get_marketing_payload(db, models, *, page: str = "/") -> dict:
             continue
         if not popup_allowed_on_page(p.key, page):
             continue
-        if p.key == "announce_bar" and not _in_schedule(p.schedule_start, p.schedule_end, now):
+        start, end = _schedule_window(p)
+        if p.key == "announce_bar" and not _in_schedule(start, end, now):
             continue
         popup_list.append(popup_payload(p))
     announcements = (await db.execute(
@@ -116,9 +142,12 @@ async def get_marketing_payload(db, models, *, page: str = "/") -> dict:
     active_announcement = None
     for a in announcements:
         if _in_schedule(a.starts_at, a.ends_at, now):
+            # The Announcement model has a single `text` column; the web
+            # app reads announcement.text.
             active_announcement = {
-                "id": a.id, "title": a.title, "body": a.body,
-                "dismissible": a.dismissible,
+                "id": a.id, "text": a.text, "enabled": a.enabled,
+                "starts_at": a.starts_at.isoformat() if a.starts_at else None,
+                "ends_at": a.ends_at.isoformat() if a.ends_at else None,
             }
             break
     consent_settings = await get_consent_settings(db, models)

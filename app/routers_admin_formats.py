@@ -99,6 +99,12 @@ def formats_matrix(request: Request, _admin=Depends(require_admin)):
     pairs = []
     for pair in CATALOG.pairs:
         entry = dict(pair)
+        # The admin Formats page renders r.pair_slug (falling back to
+        # `${r.from_slug} → ${r.to_slug}`); the catalog uses slug/from/to,
+        # so expose both spellings.
+        entry["pair_slug"] = pair["slug"]
+        entry["from_slug"] = pair["from"]
+        entry["to_slug"] = pair["to"]
         entry["status"] = health.get(pair["slug"], {}).get("status", "healthy")
         entry["last_error"] = health.get(pair["slug"], {}).get("last_error")
         entry["last_checked_at"] = health.get(pair["slug"], {}).get("last_checked_at")
@@ -130,11 +136,59 @@ def pair_detail(pair_slug: str, request: Request, _admin=Depends(require_admin))
         if hasattr(store, "get_pair_health") else {}
     override = store.get_pair_override(pair_slug) \
         if hasattr(store, "get_pair_override") else {"visible": True, "plans": None}
-    return {**pair, "status": health.get("status", "healthy"),
+    return {**pair, "pair_slug": pair["slug"], "from_slug": pair["from"],
+            "to_slug": pair["to"], "status": health.get("status", "healthy"),
             "last_error": health.get("last_error"),
             "last_checked_at": health.get("last_checked_at"),
             "visible": override.get("visible", True),
             "plans": override.get("plans")}
+
+
+class PairStatusBody(BaseModel):
+    """Toggle a pair's health status (admin Formats page switch) and/or
+    its visibility override. `status` is healthy/disabled; `visible` is
+    the newer override the page also uses."""
+    status: str | None = None
+    visible: bool | None = None
+    plans: list[str] | None = None
+
+
+@router.patch("/{pair_slug}")
+def update_pair_status(pair_slug: str, body: PairStatusBody, request: Request,
+                       _admin=Depends(require_admin_write), _csrf: bool = Depends(require_csrf)):
+    pair = CATALOG.pairs_by_slug.get(pair_slug)
+    if pair is None:
+        return JSONResponse(status_code=404, content={
+            "error": {"code": "not_found", "message": f"Unknown pair: {pair_slug}",
+                      "hint": ""}})
+    store = _store(request)
+    if body.status is not None:
+        if body.status not in ("healthy", "disabled"):
+            return JSONResponse(status_code=422, content={
+                "error": {"code": "invalid_status",
+                          "message": "status must be 'healthy' or 'disabled'.",
+                          "hint": ""}})
+        if hasattr(store, "set_pair_health"):
+            store.set_pair_health(pair_slug, body.status,
+                                  None if body.status == "healthy" else "Disabled by admin.")
+        _audit(request, "formats.pair_status", pair_slug,
+               {}, {"status": body.status})
+    if body.visible is not None or body.plans is not None:
+        before = store.get_pair_override(pair_slug) \
+            if hasattr(store, "get_pair_override") else {}
+        after = dict(before)
+        if body.visible is not None:
+            after["visible"] = body.visible
+        if body.plans is not None:
+            after["plans"] = body.plans
+        if hasattr(store, "set_pair_override"):
+            store.set_pair_override(pair_slug, after)
+        _audit(request, "formats.pair_override", pair_slug, before, after)
+    health = store.get_pair_health().get(pair_slug, {}) \
+        if hasattr(store, "get_pair_health") else {}
+    return {"pair_slug": pair_slug, "from_slug": pair["from"],
+            "to_slug": pair["to"],
+            "status": health.get("status", "healthy")}
 
 
 @router.patch("/pairs/{pair_slug}")
@@ -169,6 +223,31 @@ def run_health_check(request: Request, _admin=Depends(require_admin_write), _csr
         "healthy": summary["healthy"], "disabled": summary["disabled"],
         "no_sample": summary["no_sample"]})
     return summary
+
+
+class MakeSampleBody(BaseModel):
+    format: str
+
+
+@router.post("/make-sample")
+def make_sample(body: MakeSampleBody, request: Request,
+                _admin=Depends(require_admin_write), _csrf: bool = Depends(require_csrf)):
+    """Generate a sample file for a format (admin Formats page)."""
+    slug = CATALOG.resolve_slug(body.format)
+    if slug is None:
+        return JSONResponse(status_code=404, content={
+            "error": {"code": "not_found", "message": f"Unknown format: {body.format}",
+                      "hint": ""}})
+    path, reason = generate_sample(slug, SAMPLES_DIR)
+    if path is None:
+        return JSONResponse(status_code=422, content={
+            "error": {"code": "sample_unavailable",
+                      "message": reason or "Sample cannot be generated here.",
+                      "hint": "Upload a real sample file for this format instead."}})
+    _audit(request, "formats.sample_generate", slug, {}, {"path": str(path)})
+    return {"format": slug, "path": str(path),
+            "size": Path(path).stat().st_size,
+            "message": f"Sample for {slug} generated."}
 
 
 @router.get("/samples")

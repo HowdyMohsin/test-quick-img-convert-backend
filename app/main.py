@@ -207,7 +207,9 @@ def create_app() -> FastAPI:
         ("routers_admin", "router"),
         ("routers_admin_payments", "router"),
         ("routers_admin_ads", "router"),
+        ("routers_admin_ads", "router_admin"),
         ("routers_admin_formats", "router"),
+        ("routers_captcha", "router"),
     ]:
         try:
             _imported = __import__(f"app.{_mod}", fromlist=[_attr])

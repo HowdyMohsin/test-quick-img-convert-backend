@@ -117,6 +117,8 @@ EMAIL_TEMPLATES = [
      "Hi {name},\n\nWelcome to Quick IMG Convert. Your account is ready — you get 25 free conversions every day.\n\nHappy converting!"),
     ("verify_email", "Verify your email — Quick IMG Convert",
      "Hi {name},\n\nPlease verify your email by opening this link:\n{link}\n\nThe link works for 24 hours."),
+    ("verify_otp", "Your verification code — Quick IMG Convert",
+     "Hi {name},\n\nYour verification code is: {code}\n\nIt expires in 10 minutes. If you did not ask for this code, ignore this email."),
     ("reset_password", "Reset your password — Quick IMG Convert",
      "Hi {name},\n\nReset your password by opening this link:\n{link}\n\nThe link works for 60 minutes."),
     ("password_changed", "Your password was changed — Quick IMG Convert",

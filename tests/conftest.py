@@ -29,7 +29,13 @@ os.environ.setdefault("APP_SECRET", "test-only-admin-secret")
 os.environ.setdefault("SECRET_KEY", "test-only-secret-key")
 
 import app.admin_auth as admin_auth  # noqa: E402
+import app.billing as billing  # noqa: E402
+from app import deps as core_deps  # noqa: E402
 import app.routers_admin as routers_admin  # noqa: E402
+import app.routers_admin_ads as routers_admin_ads  # noqa: E402
+import app.routers_admin_formats as routers_admin_formats  # noqa: E402
+import app.routers_admin_plans as routers_admin_plans  # noqa: E402
+from app.pipeline import MemoryStore  # noqa: E402
 from app.admin_auth import (  # noqa: E402
     AdminSession,
     AdminUser,
@@ -249,7 +255,20 @@ def client():
     install_admin_error_handlers(app)
     app.include_router(admin_auth.router)
     app.include_router(routers_admin.router)
+    app.include_router(routers_admin_ads.router)
+    app.include_router(routers_admin_ads.router_admin)
+    app.include_router(routers_admin_formats.router)
+    app.include_router(routers_admin_plans.router)
+    # The formats router reads the pipeline store from app.state; a fresh
+    # in-memory store per test (the global DbStore would cache the first
+    # test's throwaway database file).
+    app.state.pipeline_store = MemoryStore()
     app.dependency_overrides[admin_auth.get_db] = override_get_db
+    # routers_admin_ads depends on billing.get_db and routers_admin_plans
+    # on deps.get_db — different callables from admin_auth.get_db, so
+    # override those too (billing.get_db itself delegates to deps.get_db).
+    app.dependency_overrides[billing.get_db] = override_get_db
+    app.dependency_overrides[core_deps.get_db] = override_get_db
 
     test_client = TestClient(app, raise_server_exceptions=False)
     test_client.user_id = user_id

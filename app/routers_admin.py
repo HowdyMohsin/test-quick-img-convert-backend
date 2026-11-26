@@ -387,6 +387,7 @@ def _job_dict(job) -> dict:
         "to_slug": getattr(job, "to_slug", None),
         "category": getattr(job, "category", None),
         "status": getattr(job, "status", None),
+        "progress": int(getattr(job, "progress", None) or 0),
         "error_code": getattr(job, "error_code", None),
         "error_message": getattr(job, "error_message", None),
         "in_size": getattr(job, "in_size", None),
@@ -1359,6 +1360,10 @@ async def _all_settings(db: AsyncSession) -> dict:
         values[key] = await _get_setting(db, key)
     if values.get("site_name") is None:
         values["site_name"] = "Quick IMG Convert"
+    if values.get("site_url") is None:
+        # No site_url row in site_settings (fresh deploy): fall back to the
+        # SITE_URL env var so the General page never shows an empty field.
+        values["site_url"] = os.environ.get("SITE_URL", "") or None
     if values.get("pkr_per_usd") is None:
         values["pkr_per_usd"] = float(os.environ.get("PKR_PER_USD", "0") or 0) or None
     if values.get("quota_tz") is None:
@@ -1452,6 +1457,8 @@ async def get_general_settings(
         values[key] = await _get_setting(db, key)
     if values.get("site_name") is None:
         values["site_name"] = "Quick IMG Convert"
+    if values.get("site_url") is None:
+        values["site_url"] = os.environ.get("SITE_URL", "") or None
     if values.get("pkr_per_usd") is None:
         values["pkr_per_usd"] = float(os.environ.get("PKR_PER_USD", "0") or 0) or None
     if values.get("quota_tz") is None:
@@ -1758,6 +1765,131 @@ async def danger_export(
     )
 
 # ---------------------------------------------------------------------------
+# Jobs (live conversion queue)
+# ---------------------------------------------------------------------------
+
+# The admin Jobs page filters with `canceled` (one L); the database
+# stores `cancelled` (two Ls, as the pipeline/worker write it).
+_JOB_STATUS_ALIASES = {"canceled": "cancelled"}
+
+
+@router.get("/jobs")
+async def admin_list_jobs(
+    status: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin("jobs", "read")),
+):
+    """Live conversion queue for the admin Jobs page (polls every 15s)."""
+    query = select(Job).order_by(Job.created_at.desc()).limit(200)
+    if status:
+        query = query.where(Job.status == _JOB_STATUS_ALIASES.get(status, status))
+    rows = (await db.execute(query)).scalars().all()
+    return {"items": [_job_dict(j) for j in rows], "total": len(rows)}
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def admin_cancel_job(
+    job_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin("jobs", "write")),
+    _csrf: bool = Depends(require_csrf),
+):
+    """Admin cancel: a queued job is cancelled and its quota refunded; a
+    running job is flagged and the worker stops it (same semantics as the
+    user-facing cancel, without the owner check)."""
+    job = await db.get(Job, job_id)
+    if job is None:
+        raise admin_error(404, "not_found", "That job was not found.",
+                          "Check the job id and try again.")
+    before = {"status": job.status}
+    refunded = False
+    if job.status == "queued":
+        job.status = "cancelled"
+        job.finished_at = datetime.now(timezone.utc)
+        from app.quotas import refund as _refund_quota
+
+        created = job.created_at
+        if getattr(created, "tzinfo", None) is not None:
+            day = created.astimezone(ZoneInfo(
+                os.environ.get("QUOTA_TZ", "Asia/Karachi"))).date()
+        else:
+            day = created.date()
+        for key in (job.quota_keys or [job.owner_key]):
+            await _refund_quota(db, key, day=day)
+        refunded = True
+    elif job.status == "running":
+        job.cancel_requested = True
+    else:
+        return {"job": _job_dict(job),
+                "message": f"Job is already {job.status}."}
+    await audit_log_write(db, admin.email, "jobs.cancel", f"job:{job.id}",
+                          before, {"status": job.status}, _client_ip(request))
+    await db.commit()
+    return {"job": _job_dict(job), "refunded": refunded}
+
+
+@router.post("/jobs/{job_id}/retry")
+async def admin_retry_job(
+    job_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin("jobs", "write")),
+    _csrf: bool = Depends(require_csrf),
+):
+    """Re-queue a failed job."""
+    job = await db.get(Job, job_id)
+    if job is None:
+        raise admin_error(404, "not_found", "That job was not found.",
+                          "Check the job id and try again.")
+    if job.status != "failed":
+        raise admin_error(400, "not_failed",
+                          "Only failed jobs can be retried.",
+                          "Pick a job with status failed.")
+    before = {"status": job.status}
+    job.status = "queued"
+    job.error_code = None
+    job.error_message = None
+    job.progress = 0
+    job.started_at = None
+    job.finished_at = None
+    job.cancel_requested = False
+    await audit_log_write(db, admin.email, "jobs.retry", f"job:{job.id}",
+                          before, {"status": job.status}, _client_ip(request))
+    await db.commit()
+    return {"job": _job_dict(job)}
+
+
+@router.post("/jobs/purge-expired")
+async def admin_purge_expired_jobs(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin("jobs", "write")),
+    _csrf: bool = Depends(require_csrf),
+):
+    """Delete expired jobs (and their output files, best-effort). Running
+    jobs are never purged."""
+    now = datetime.now(timezone.utc)
+    rows = (await db.execute(
+        select(Job).where(Job.expires_at.is_not(None), Job.expires_at < now,
+                          Job.status != "running")
+    )).scalars().all()
+    purged = 0
+    for job in rows:
+        if job.out_path:
+            try:
+                os.remove(job.out_path)
+            except OSError:
+                pass
+        await db.delete(job)
+        purged += 1
+    await audit_log_write(db, admin.email, "jobs.purge_expired", "jobs",
+                          None, {"purged": purged}, _client_ip(request))
+    await db.commit()
+    return {"purged": purged}
+
+
+# ---------------------------------------------------------------------------
 # Reports
 # ---------------------------------------------------------------------------
 
@@ -1821,6 +1953,126 @@ async def _report_base(db: AsyncSession, start_utc: datetime, end_utc: datetime)
         "success_rate": round(100.0 * done / total, 1) if total else 100.0,
         "bytes_in": int(bytes_in or 0),
         "bytes_out": int(bytes_out or 0),
+    }
+
+
+async def _mrr_cents(db: AsyncSession) -> int:
+    """Monthly recurring revenue from active/trialing/past_due subscriptions."""
+    subs = (await db.execute(select(Subscription).where(
+        Subscription.status.in_(("active", "trialing", "past_due"))
+    ))).scalars().all()
+    plans = {p.id: p for p in (await db.execute(select(Plan))).scalars().all()}
+    total = 0
+    for sub in subs:
+        plan = plans.get(sub.plan_id)
+        if plan is None:
+            continue
+        if (getattr(sub, "interval", None) or "monthly") == "yearly":
+            total += (plan.price_yearly_cents or 0) // 12
+        else:
+            total += plan.price_cents or 0
+    return int(total)
+
+
+@router.get("/reports")
+async def report_overview(
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin("reports", "read")),
+):
+    """One-call overview for the admin Reports page (from/to are
+    YYYY-MM-DD). Every section the page renders is included; empty
+    ranges return zeroes and empty lists, never a 404."""
+    start_utc, end_utc = _date_range(from_, to)
+    base = await _report_base(db, start_utc, end_utc)
+    mrr = await _mrr_cents(db)
+    # Daily series, zero-filled so the chart renders for empty ranges.
+    by_day_rows = (await db.execute(
+        select(func.date(Job.created_at).label("day"), func.count().label("total"))
+        .where(Job.created_at >= start_utc, Job.created_at < end_utc)
+        .group_by(func.date(Job.created_at))
+        .order_by(func.date(Job.created_at))
+    )).all()
+    counts = {str(r.day): int(r.total) for r in by_day_rows}
+    daily = []
+    day = start_utc.date()
+    while day < end_utc.date():
+        daily.append({"date": day.isoformat(),
+                      "conversions": counts.get(day.isoformat(), 0)})
+        day += timedelta(days=1)
+    revenue_rows = (await db.execute(
+        select(PaymentRequest.provider_key, PaymentRequest.plan_id,
+               func.coalesce(func.sum(PaymentRequest.amount_cents), 0).label("amount_cents"))
+        .where(PaymentRequest.status == "approved",
+               PaymentRequest.created_at >= start_utc,
+               PaymentRequest.created_at < end_utc)
+        .group_by(PaymentRequest.provider_key, PaymentRequest.plan_id)
+        .order_by(func.sum(PaymentRequest.amount_cents).desc())
+    )).all()
+    anon = (await db.execute(select(func.count()).select_from(Event).where(
+        Event.ts >= start_utc, Event.ts < end_utc,
+        Event.owner_type == "anonymous",
+    ))).scalar_one()
+    total_users = (await db.execute(select(func.count()).select_from(User))).scalar_one()
+    free_users = (await db.execute(
+        select(func.count()).select_from(User).where(User.plan == "free")
+    )).scalar_one()
+    paid_subs = (await db.execute(
+        select(func.count()).select_from(Subscription).where(
+            Subscription.status.in_(("active", "trialing", "past_due")))
+    )).scalar_one()
+    top_rows = (await db.execute(
+        select(Job.pair_slug, func.count().label("total"))
+        .where(Job.created_at >= start_utc, Job.created_at < end_utc,
+               Job.pair_slug.is_not(None))
+        .group_by(Job.pair_slug)
+        .order_by(func.count().desc())
+        .limit(20)
+    )).all()
+    error_rows = (await db.execute(
+        select(Job.error_code, Job.pair_slug, func.count().label("total"))
+        .where(Job.created_at >= start_utc, Job.created_at < end_utc,
+               Job.status.in_(_FAILED_STATUSES))
+        .group_by(Job.error_code, Job.pair_slug)
+        .order_by(func.count().desc())
+    )).all()
+    return {
+        "from": start_utc.date().isoformat(),
+        "to": (end_utc - timedelta(days=1)).date().isoformat(),
+        "totals": {
+            "conversions": base["conversions"],
+            "successful": base["successful"],
+            "failed": base["failed"],
+            "success_rate": base["success_rate"],
+            "bytes_in": base["bytes_in"],
+            "bytes_out": base["bytes_out"],
+            "mrr_cents": mrr,
+        },
+        "daily": daily,
+        "revenue_by_provider": [
+            {"provider_key": r.provider_key, "plan": r.plan_id,
+             "amount_cents": int(r.amount_cents or 0)}
+            for r in revenue_rows
+        ],
+        "funnel": {
+            "anonymous": int(anon),
+            "free": int(free_users),
+            "paid": int(paid_subs),
+            "anon_to_free_rate": round(100.0 * free_users / max(1, total_users), 1),
+            "free_to_paid_rate": round(100.0 * paid_subs / max(1, total_users), 1),
+        },
+        "top_pairs": [
+            {"pair_slug": r.pair_slug, "pair": r.pair_slug,
+             "conversions": int(r.total), "count": int(r.total)}
+            for r in top_rows
+        ],
+        "engine_errors": [
+            {"error_code": r.error_code or "unknown",
+             "code": r.error_code or "unknown",
+             "pair_slug": r.pair_slug, "count": int(r.total)}
+            for r in error_rows
+        ],
     }
 
 
@@ -1908,19 +2160,7 @@ async def report_revenue(
     ).all()
     total_cents = sum(int(r.amount_cents or 0) for r in by_provider_rows)
     # MRR from currently active subscriptions.
-    subs = (await db.execute(select(Subscription).where(
-        Subscription.status.in_(("active", "trialing", "past_due"))
-    ))).scalars().all()
-    plans = {p.id: p for p in (await db.execute(select(Plan))).scalars().all()}
-    mrr_cents = 0
-    for sub in subs:
-        plan = plans.get(sub.plan_id)
-        if plan is None:
-            continue
-        if (getattr(sub, "interval", None) or "monthly") == "yearly":
-            mrr_cents += (plan.price_yearly_cents or 0) // 12
-        else:
-            mrr_cents += plan.price_cents or 0
+    mrr_cents = await _mrr_cents(db)
     # RPM by slot: revenue per 1,000 impressions, from ad_revenue + ad_events.
     revenue_rows = (
         await db.execute(

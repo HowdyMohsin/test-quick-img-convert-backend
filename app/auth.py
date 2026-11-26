@@ -41,7 +41,7 @@ from .deps import (
     parse_user_agent,
     require_csrf,
 )
-from .models import AuthIdentity, EmailToken, Notification, Session, User
+from .models import AuthIdentity, EmailOtp, EmailToken, Notification, Session, User
 from .rate_limit import (
     ip_key,
     login_locked,
@@ -196,6 +196,53 @@ async def _send_verification(db: AsyncSession, user: User) -> None:
     )
 
 
+# ---------------------------------------------------------------- email OTP
+# 6-digit verification codes (the register flow sends one alongside the
+# verification link). Only the SHA-256 hash is stored; one active code
+# per user; 10-minute expiry; 5 failed attempts voids the code. Sending
+# is best-effort (mail.send_mail returns False without SMTP) and never
+# breaks registration — the caller reports otp_sent so the UI knows.
+OTP_TTL_MINUTES = 10
+OTP_MAX_ATTEMPTS = 5
+OTP_RESEND_COOLDOWN_SECONDS = 60
+
+
+async def _active_otp(db: AsyncSession, user: User) -> EmailOtp | None:
+    result = await db.execute(
+        select(EmailOtp).where(
+            EmailOtp.user_id == user.id, EmailOtp.used_at.is_(None),
+        ).order_by(EmailOtp.created_at.desc())
+    )
+    return result.scalars().first()
+
+
+async def _issue_otp(db: AsyncSession, user: User) -> tuple[str, bool]:
+    """Create a fresh code (invalidating any earlier unused one) and
+    email it. Returns (code, sent)."""
+    old = await db.execute(
+        select(EmailOtp).where(
+            EmailOtp.user_id == user.id, EmailOtp.used_at.is_(None),
+        )
+    )
+    for row in old.scalars().all():
+        row.used_at = _now()
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    db.add(EmailOtp(
+        user_id=user.id,
+        code_hash=passwords.hash_token(code),
+        expires_at=_now() + timedelta(minutes=OTP_TTL_MINUTES),
+    ))
+    await db.commit()
+    sent = await send_template_email(
+        db, "verify_otp", user.email,
+        "Your verification code — Quick IMG Convert",
+        "Hi {name},\n\nYour verification code is: {code}\n\n"
+        "It expires in 10 minutes. If you did not ask for this, ignore this email.",
+        name=user.display_name or "there", code=code,
+    )
+    return code, sent
+
+
 def _device_browser(user_agent: str) -> tuple[str, str]:
     """Best-effort (device, browser) labels from a stored User-Agent."""
     ua_low = user_agent.lower()
@@ -342,9 +389,11 @@ async def register(
         href="/account",
     )
     await _send_verification(db, user)
+    _otp_code, otp_sent = await _issue_otp(db, user)
     return {
         "user": _public_user(user),
         "email_verified": False,
+        "otp_sent": otp_sent,
         "message": "Account created. Check your inbox to verify your email.",
     }
 
@@ -625,6 +674,108 @@ async def resend_verification(
                         "Wait a minute and try again.")
     await _send_verification(db, user)
     return {"message": "Verification email sent."}
+
+
+class VerifyOtpBody(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    code: str = Field(min_length=1, max_length=10)
+
+
+class ResendOtpBody(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+
+
+@router.post("/verify-otp")
+async def verify_otp(
+    body: VerifyOtpBody, request: Request, db: AsyncSession = Depends(get_db),
+):
+    """Verify the 6-digit email code. On success the email is marked
+    verified (same as the verification link). Wrong / expired / exhausted
+    codes return a clear 400, never a 500."""
+    session, _ = await get_session_and_user(request, db)
+    require_csrf(request, session)
+    rate_limit_or_429(ip_key(request, "verify-otp"), 10, 900, "verification code")
+    email = normalize_email(body.email)
+    code = (body.code or "").strip()
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if user is None or user.deleted_at is not None:
+        raise api_error(400, "invalid_code",
+                        "No verification code is active for this email. Request a new code.",
+                        "Request a new code and try again.")
+    if user.banned:
+        raise api_error(403, "account_banned",
+                        f"Your account is banned. {user.ban_reason or ''}".strip(),
+                        "Contact support if you think this is a mistake.")
+    if len(code) != 6 or not code.isdigit():
+        raise api_error(400, "invalid_code",
+                        "Enter the 6-digit code we sent to your email.",
+                        "Check the email and enter all 6 digits.")
+    record = await _active_otp(db, user)
+    if record is None:
+        raise api_error(400, "invalid_code",
+                        "No verification code is active for this email. Request a new code.",
+                        "Request a new code and try again.")
+    if record.attempts >= OTP_MAX_ATTEMPTS:
+        record.used_at = _now()
+        await db.commit()
+        raise api_error(400, "too_many_attempts",
+                        "Too many wrong attempts. This code is void — request a new one.",
+                        "Request a new code.")
+    if (ensure_aware(record.expires_at) or _now()) <= _now():
+        record.used_at = _now()
+        await db.commit()
+        raise api_error(400, "expired_code",
+                        "This code has expired. Request a new one.",
+                        "Request a new code.")
+    if not passwords.constant_time_equal(passwords.hash_token(code), record.code_hash):
+        record.attempts += 1
+        await db.commit()
+        raise api_error(400, "invalid_code",
+                        "That code is not correct. Check the email and try again.",
+                        "Check the email and try again.")
+    record.used_at = _now()
+    user.email_verified_at = _now()
+    await db.commit()
+    return {"ok": True, "message": "Your email is verified."}
+
+
+@router.post("/resend-otp")
+async def resend_otp(
+    body: ResendOtpBody, request: Request, db: AsyncSession = Depends(get_db),
+):
+    """Issue a fresh code (invalidates the previous one). 60-second
+    server-side cooldown: too soon returns 429 with retry_after."""
+    from fastapi import HTTPException
+
+    session, _ = await get_session_and_user(request, db)
+    require_csrf(request, session)
+    rate_limit_or_429(ip_key(request, "resend-otp"), 5, 3600, "verification code")
+    email = normalize_email(body.email)
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if user is None or user.deleted_at is not None:
+        # Do not reveal whether the email has an account.
+        return {"ok": True,
+                "message": "If that email has an account, a new code was sent."}
+    if user.email_verified_at is not None:
+        return {"ok": True, "message": "Your email is already verified."}
+    recent = await db.execute(
+        select(EmailOtp).where(
+            EmailOtp.user_id == user.id,
+            EmailOtp.created_at >= _now() - timedelta(seconds=OTP_RESEND_COOLDOWN_SECONDS),
+        ).order_by(EmailOtp.created_at.desc())
+    )
+    last = recent.scalars().first()
+    if last is not None:
+        elapsed = (_now() - (ensure_aware(last.created_at) or _now())).total_seconds()
+        wait = max(1, OTP_RESEND_COOLDOWN_SECONDS - int(elapsed))
+        raise HTTPException(status_code=429, detail={
+            "error": {"code": "resend_cooldown",
+                      "message": f"Please wait {wait} seconds before requesting another code.",
+                      "hint": "Wait a minute and try again."},
+            "retry_after": wait,
+        })
+    await _issue_otp(db, user)
+    return {"ok": True, "message": "A new verification code was sent."}
 
 
 # ---------------------------------------------------------------- change password/email

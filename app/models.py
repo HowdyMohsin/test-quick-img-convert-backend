@@ -146,6 +146,24 @@ class EmailToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 
+class EmailOtp(Base):
+    """One-time 6-digit email verification code.
+
+    Only the SHA-256 hash of the code is stored. One active code per user:
+    issuing a new code invalidates any earlier unused one. A code expires
+    after 10 minutes and is void after 5 failed attempts.
+    """
+    __tablename__ = "email_otps"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
 class AuthAttempt(Base):
     __tablename__ = "auth_attempts"
 

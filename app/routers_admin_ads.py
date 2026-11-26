@@ -33,6 +33,13 @@ from app.popups import POPUP_KEYS, validate_popup
 
 router = APIRouter(prefix="/admin/ads", tags=["admin-ads"])
 
+# Alias router under /admin: the admin panel calls GET /admin/popups,
+# PATCH /admin/popups/{key}, GET /admin/announcements and POST
+# /admin/announcements (the /admin/ads/* routes above stay live — the
+# Ad Slots page depends on /admin/ads/slots). Handlers are registered on
+# both routers by stacking decorators.
+router_admin = APIRouter(prefix="/admin", tags=["admin-popups"])
+
 
 class SlotBody(BaseModel):
     key: str
@@ -82,7 +89,7 @@ class RevenueBody(BaseModel):
 
 
 class PopupBody(BaseModel):
-    key: str
+    key: Optional[str] = None  # optional: the path key is used when omitted
     enabled: bool = True
     title: Optional[str] = None
     body: Optional[str] = None
@@ -95,13 +102,29 @@ class PopupBody(BaseModel):
     sort: int = 0
 
 
+class PopupPatchBody(BaseModel):
+    """Partial popup update (admin page toggle + edit form). All optional."""
+    enabled: Optional[bool] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    cta_text: Optional[str] = None
+    cta_href: Optional[str] = None
+    frequency: Optional[str] = None
+    schedule_start: Optional[str] = None
+    schedule_end: Optional[str] = None
+    pages: Optional[list[str]] = None
+
+
 class AnnouncementBody(BaseModel):
+    # The Announcement model has a single `text` column; `title`/`body`
+    # are accepted as legacy aliases and folded into `text`.
+    text: Optional[str] = None
     title: Optional[str] = None
     body: Optional[str] = None
     enabled: bool = True
     starts_at: Optional[str] = None
     ends_at: Optional[str] = None
-    dismissible: bool = True
+    dismissible: Optional[bool] = None
 
 
 def _admin_email(admin: Any) -> str:
@@ -408,93 +431,152 @@ async def import_revenue(file: UploadFile = File(...), http_request: Request = N
 
 
 # ------------------------------------------------------------------ popups
-@router.get("/popups")
-async def list_popups(admin=Depends(get_current_admin), db=Depends(get_db)):
-    models = resolve_models()
-    rows = (await db.execute(
-        select(models.Popup).order_by(models.Popup.sort)
-    )).scalars().all()
-    return {"popups": [{
+# NOTE on the Popup model: it has NO `sort`, `schedule_start` or
+# `schedule_end` columns — the window lives in the `schedule` JSON
+# column ({"start": ..., "end": ...}) and rows order by key. The helpers
+# below keep the API shape the admin panel expects while storing only
+# real columns.
+def _popup_payload(p: Any) -> dict:
+    schedule = p.schedule if isinstance(getattr(p, "schedule", None), dict) else {}
+    return {
         "key": p.key, "enabled": p.enabled, "title": p.title, "body": p.body,
         "cta_text": p.cta_text, "cta_href": p.cta_href,
         "frequency": p.frequency,
-        "schedule_start": p.schedule_start.isoformat() if p.schedule_start else None,
-        "schedule_end": p.schedule_end.isoformat() if p.schedule_end else None,
-        "pages": p.pages, "sort": p.sort,
-    } for p in rows]}
+        "schedule_start": schedule.get("start") or schedule.get("schedule_start"),
+        "schedule_end": schedule.get("end") or schedule.get("schedule_end"),
+        "pages": p.pages, "sort": 0,
+    }
+
+
+def _apply_popup_fields(row: Any, data: dict) -> None:
+    """Merge the given fields into a Popup row (partial updates ok)."""
+    for field in ("enabled", "title", "body", "cta_text", "cta_href",
+                  "frequency", "pages"):
+        if data.get(field) is not None:
+            setattr(row, field, data[field])
+    schedule = dict(row.schedule) if isinstance(getattr(row, "schedule", None), dict) else {}
+    if data.get("schedule_start") is not None:
+        start = _parse_dt(data["schedule_start"])
+        schedule["start"] = start.isoformat() if start else None
+    if data.get("schedule_end") is not None:
+        end = _parse_dt(data["schedule_end"])
+        schedule["end"] = end.isoformat() if end else None
+    if schedule:
+        row.schedule = schedule
+
+
+@router.get("/popups")
+@router_admin.get("/popups")
+async def list_popups(admin=Depends(get_current_admin), db=Depends(get_db)):
+    models = resolve_models()
+    rows = (await db.execute(
+        select(models.Popup).order_by(models.Popup.key)
+    )).scalars().all()
+    return {"popups": [_popup_payload(p) for p in rows]}
 
 
 @router.put("/popups/{key}")
+@router_admin.put("/popups/{key}")
 async def upsert_popup(key: str, body: PopupBody, http_request: Request,
                        admin=Depends(get_current_admin), _csrf: bool = Depends(require_csrf), db=Depends(get_db)):
+    models = resolve_models()
+    effective_key = (body.key or key).strip()
+    if effective_key != key:
+        raise err(400, "key_mismatch", "The popup key in the body does not match the URL.",
+                  "Send the same key in the URL and the body, or omit it from the body.")
+    if effective_key not in POPUP_KEYS:
+        raise err(400, "unknown_popup", f"Unknown popup '{effective_key}'.",
+                  "Use one of: " + ", ".join(POPUP_KEYS))
+    try:
+        validate_popup({"key": effective_key, "enabled": body.enabled})
+    except ValueError as exc:
+        raise err(400, "invalid_popup", str(exc), "Check the popup fields.")
+    row = (await db.execute(
+        select(models.Popup).where(models.Popup.key == effective_key)
+    )).scalar_one_or_none()
+    before = _popup_payload(row) if row else None
+    if row is None:
+        row = models.Popup(key=effective_key)
+    _apply_popup_fields(row, body.model_dump())
+    row.enabled = body.enabled
+    db.add(row)
+    await record_audit(db, models, _admin_email(admin), "ads.popup.update",
+                       f"popup:{effective_key}", before,
+                       {"enabled": row.enabled, "title": row.title},
+                       ip=client_ip(http_request))
+    await db.commit()
+    return {"key": effective_key, "enabled": row.enabled}
+
+
+@router_admin.patch("/popups/{key}")
+@router.patch("/popups/{key}")
+async def patch_popup(key: str, body: PopupPatchBody, http_request: Request,
+                      admin=Depends(get_current_admin), _csrf: bool = Depends(require_csrf), db=Depends(get_db)):
+    """Partial popup update: the admin page toggles with {enabled} only
+    and edits with the form fields (no key in the body)."""
     models = resolve_models()
     if key not in POPUP_KEYS:
         raise err(400, "unknown_popup", f"Unknown popup '{key}'.",
                   "Use one of: " + ", ".join(POPUP_KEYS))
-    try:
-        validate_popup({"key": key, "enabled": body.enabled})
-    except ValueError as exc:
-        raise err(400, "invalid_popup", str(exc), "Check the popup fields.")
     row = (await db.execute(
         select(models.Popup).where(models.Popup.key == key)
     )).scalar_one_or_none()
-    before = {"enabled": row.enabled, "title": row.title} if row else None
+    before = _popup_payload(row) if row else None
     if row is None:
         row = models.Popup(key=key)
-    row.enabled = body.enabled
-    row.title = body.title
-    row.body = body.body
-    row.cta_text = body.cta_text
-    row.cta_href = body.cta_href
-    row.frequency = body.frequency
-    row.schedule_start = _parse_dt(body.schedule_start)
-    row.schedule_end = _parse_dt(body.schedule_end)
-    row.pages = body.pages
-    row.sort = body.sort
+    _apply_popup_fields(row, body.model_dump())
     db.add(row)
     await record_audit(db, models, _admin_email(admin), "ads.popup.update",
                        f"popup:{key}", before,
                        {"enabled": row.enabled, "title": row.title},
                        ip=client_ip(http_request))
     await db.commit()
-    return {"key": key, "enabled": row.enabled}
+    return _popup_payload(row)
+
+
+def _announcement_payload(a: Any) -> dict:
+    return {
+        "id": a.id, "text": a.text, "enabled": a.enabled,
+        "starts_at": a.starts_at.isoformat() if a.starts_at else None,
+        "ends_at": a.ends_at.isoformat() if a.ends_at else None,
+    }
 
 
 # ------------------------------------------------------------ announcements
 @router.get("/announcements")
+@router_admin.get("/announcements")
 async def list_announcements(admin=Depends(get_current_admin), db=Depends(get_db)):
     models = resolve_models()
     rows = (await db.execute(
         select(models.Announcement).order_by(models.Announcement.id.desc())
     )).scalars().all()
-    return {"announcements": [{
-        "id": a.id, "title": a.title, "body": a.body, "enabled": a.enabled,
-        "starts_at": a.starts_at.isoformat() if a.starts_at else None,
-        "ends_at": a.ends_at.isoformat() if a.ends_at else None,
-        "dismissible": a.dismissible,
-    } for a in rows]}
+    return {"announcements": [_announcement_payload(a) for a in rows]}
 
 
 @router.post("/announcements")
+@router_admin.post("/announcements")
 async def create_announcement(body: AnnouncementBody, http_request: Request,
                               admin=Depends(get_current_admin), _csrf: bool = Depends(require_csrf), db=Depends(get_db)):
     models = resolve_models()
+    text = (body.text or body.body or body.title or "").strip()
+    if not text:
+        raise err(400, "empty_announcement", "Announcement text is required.",
+                  "Enter the announcement text.")
     row = models.Announcement(
-        title=body.title, body=body.body, enabled=body.enabled,
-        starts_at=_parse_dt(body.starts_at), ends_at=_parse_dt(body.ends_at),
-        dismissible=body.dismissible)
+        text=text, enabled=body.enabled,
+        starts_at=_parse_dt(body.starts_at), ends_at=_parse_dt(body.ends_at))
     db.add(row)
     await db.flush()
     await record_audit(db, models, _admin_email(admin), "ads.announcement.create",
                        f"announcement:{row.id}", None,
-                       {"title": row.title, "enabled": row.enabled},
+                       {"text": row.text, "enabled": row.enabled},
                        ip=client_ip(http_request))
     await db.commit()
-    return {"id": row.id, "title": row.title, "enabled": row.enabled}
+    return _announcement_payload(row)
 
 
 @router.delete("/announcements/{announcement_id}")
-async def delete_announcement(announcement_id: int, http_request: Request,
+async def delete_announcement(announcement_id: str, http_request: Request,
                               admin=Depends(get_current_admin), _csrf: bool = Depends(require_csrf), db=Depends(get_db)):
     models = resolve_models()
     row = (await db.execute(
@@ -506,6 +588,6 @@ async def delete_announcement(announcement_id: int, http_request: Request,
     await db.delete(row)
     await record_audit(db, models, _admin_email(admin), "ads.announcement.delete",
                        f"announcement:{announcement_id}",
-                       {"title": row.title}, None, ip=client_ip(http_request))
+                       {"text": row.text}, None, ip=client_ip(http_request))
     await db.commit()
     return {"deleted": announcement_id}
