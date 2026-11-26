@@ -28,7 +28,8 @@ def render_template(subject: str, body: str, **values: object) -> tuple[str, str
     return subject.format_map(_SafeDict(mapping)), body.format_map(_SafeDict(mapping))
 
 
-def send_mail_sync(to_email: str, subject: str, body: str, html_body: str | None = None) -> None:
+def send_mail_sync(to_email: str, subject: str, body: str, html_body: str | None = None,
+                    attachment: tuple[str, bytes] | None = None) -> None:
     """Send one message with smtplib. Raises on SMTP failure (caller logs)."""
     settings = get_settings()
     msg = EmailMessage()
@@ -38,6 +39,10 @@ def send_mail_sync(to_email: str, subject: str, body: str, html_body: str | None
     msg.set_content(body)
     if html_body:
         msg.add_alternative(html_body, subtype="html")
+    if attachment is not None:
+        filename, data = attachment
+        msg.add_attachment(data, maintype="application", subtype="pdf",
+                           filename=filename)
     host = settings.smtp_host
     port = settings.smtp_port
     if port == 465:
@@ -59,7 +64,8 @@ def send_mail_sync(to_email: str, subject: str, body: str, html_body: str | None
             pass
 
 
-async def send_mail(to_email: str, subject: str, body: str, html_body: str | None = None) -> bool:
+async def send_mail(to_email: str, subject: str, body: str, html_body: str | None = None,
+                    attachment: tuple[str, bytes] | None = None) -> bool:
     """Best-effort async send. Returns False (never raises) when mail is
     not configured or delivery fails, so auth flows are not blocked by
     a mail outage; the caller logs the failure."""
@@ -67,7 +73,8 @@ async def send_mail(to_email: str, subject: str, body: str, html_body: str | Non
     if not settings.smtp_host:
         return False
     try:
-        await asyncio.to_thread(send_mail_sync, to_email, subject, body, html_body)
+        await asyncio.to_thread(send_mail_sync, to_email, subject, body,
+                                html_body, attachment)
         return True
     except Exception:
         return False

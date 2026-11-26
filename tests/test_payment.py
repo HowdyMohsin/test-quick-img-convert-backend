@@ -458,3 +458,52 @@ def test_receipt_pdf_starts_with_pdf_header():
     pdf_bytes, renderer = generate_receipt_pdf(data)
     assert pdf_bytes[:5] == b"%PDF-"
     assert renderer in ("reportlab", "fpdf2", "minimal")
+
+
+def test_billing_send_mail_awaits_async_helper(monkeypatch):
+    """Regression: billing.send_mail used to call the async app.mail
+    helper without awaiting it, so every payment email was silently
+    dropped (RuntimeWarning: coroutine was never awaited) while the
+    function still returned True."""
+    import app.mail as mail_mod
+    from app.billing import send_mail as billing_send_mail
+
+    calls = []
+
+    async def fake_send(to_email, subject, body, html_body=None, attachment=None):
+        calls.append((to_email, subject, body, attachment))
+        return True
+
+    monkeypatch.setattr(mail_mod, "send_mail", fake_send)
+    assert asyncio.run(
+        billing_send_mail("buyer@example.com", "Subject", "Body")) is True
+    assert len(calls) == 1
+    assert calls[0][0] == "buyer@example.com"
+    # The receipt attachment passes through to the helper.
+    assert asyncio.run(
+        billing_send_mail("buyer@example.com", "Receipt", "Body",
+                          attachment=("receipt-1.pdf", b"%PDF"))) is True
+    assert calls[1][3] == ("receipt-1.pdf", b"%PDF")
+
+    async def fake_fail(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(mail_mod, "send_mail", fake_fail)
+    assert asyncio.run(
+        billing_send_mail("buyer@example.com", "Subject", "Body")) is False
+
+
+def test_billing_send_mail_false_without_smtp(monkeypatch):
+    """With no SMTP configured the real mail helper returns False and
+    billing.send_mail reports False instead of raising."""
+    from types import SimpleNamespace
+
+    import app.mail as mail_mod
+    from app.billing import send_mail as billing_send_mail
+
+    monkeypatch.setattr(
+        mail_mod, "get_settings",
+        lambda: SimpleNamespace(smtp_host="", smtp_port=587, smtp_user="",
+                                smtp_password="", smtp_from=""))
+    assert asyncio.run(
+        billing_send_mail("buyer@example.com", "Subject", "Body")) is False

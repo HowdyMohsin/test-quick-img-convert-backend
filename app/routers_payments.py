@@ -281,10 +281,10 @@ async def manual_submit(
         f"(reference {reference}) is pending approval.",
         link="/account?tab=plan")
     if getattr(user, "email", None):
-        send_mail(user.email, "Payment submitted — pending approval",
-                  f"Your {cls.label} payment for the {plan_obj.name} plan "
-                  f"(reference {reference}) was submitted and is pending "
-                  "approval. We will email you once it is reviewed.")
+        await send_mail(user.email, "Payment submitted — pending approval",
+                        f"Your {cls.label} payment for the {plan_obj.name} plan "
+                        f"(reference {reference}) was submitted and is pending "
+                        "approval. We will email you once it is reviewed.")
     await db.commit()
     return {
         "id": req.id, "status": req.status, "provider": req.provider_key,

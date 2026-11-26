@@ -194,11 +194,11 @@ async def approve_request(request_id: str, body: ApproveBody,
                           if req.provider_key != "manual_usdt"
                           else f"{(req.display_amount or 0) / 100:.2f} USDT"))
         pdf_bytes, _renderer = generate_receipt_pdf(data)
-        send_mail(user.email,
-                  f"Payment approved — receipt {receipt_no}",
-                  f"Your {plan.name} plan payment was approved. "
-                  f"Receipt {receipt_no} is attached.",
-                  attachment=(f"receipt-{receipt_no}.pdf", pdf_bytes))
+        await send_mail(user.email,
+                        f"Payment approved — receipt {receipt_no}",
+                        f"Your {plan.name} plan payment was approved. "
+                        f"Receipt {receipt_no} is attached.",
+                        attachment=(f"receipt-{receipt_no}.pdf", pdf_bytes))
     await record_audit(db, models, _admin_email(admin), "payment.approve",
                        f"payment_request:{req.id}", before,
                        {"status": "approved", "receipt_no": receipt_no},
@@ -242,9 +242,9 @@ async def reject_request(request_id: str, body: RejectBody,
         select(models.User).where(models.User.id == req.user_id)
     )).scalar_one_or_none()
     if user is not None and getattr(user, "email", None):
-        send_mail(user.email, "Your payment was not approved",
-                  f"Your payment (reference {req.reference}) was rejected: "
-                  f"{body.reason}")
+        await send_mail(user.email, "Your payment was not approved",
+                        f"Your payment (reference {req.reference}) was rejected: "
+                        f"{body.reason}")
     await record_audit(db, models, _admin_email(admin), "payment.reject",
                        f"payment_request:{req.id}", before,
                        {"status": "rejected", "reason": body.reason},

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac as hmac_mod
+import inspect
 import json
 import logging
 import math
@@ -723,12 +724,16 @@ async def provider_row(db, models, key: str):
 
 
 # ------------------------------------------------------------------- mail
-def send_mail(to: str, subject: str, body: str, html: Optional[str] = None,
-              attachment: Optional[tuple[str, bytes]] = None) -> bool:
+async def send_mail(to: str, subject: str, body: str, html: Optional[str] = None,
+                    attachment: Optional[tuple[str, bytes]] = None) -> bool:
     """Send transactional mail via app.mail when present. Never raises.
 
     Returns True when a mail helper accepted the message. The core agent
-    owns app.mail; its exact function name is probed defensively.
+    owns app.mail; its exact function name is probed defensively. The
+    helpers are async, so this is async too and callers must await it:
+    calling the async helper without awaiting returned an un-awaited
+    coroutine and silently dropped every payment email, so never call
+    it fire-and-forget.
     """
     try:
         from app import mail as mail_mod  # type: ignore
@@ -741,16 +746,21 @@ def send_mail(to: str, subject: str, body: str, html: Optional[str] = None,
         if fn is None:
             continue
         try:
-            kwargs: dict[str, Any] = {"to": to, "subject": subject, "body": body}
-            if html is not None:
-                kwargs["html"] = html
-            if attachment is not None:
-                kwargs["attachment"] = attachment
-            fn(**kwargs)
+            result = fn(to, subject, body, html, attachment)
+            if inspect.isawaitable(result):
+                return bool(await result)
             return True
         except TypeError:
+            # Helper with a different (keyword) signature.
             try:
-                fn(to, subject, body)
+                kwargs: dict[str, Any] = {"to": to, "subject": subject, "body": body}
+                if html is not None:
+                    kwargs["html_body"] = html
+                if attachment is not None:
+                    kwargs["attachment"] = attachment
+                result = fn(**kwargs)
+                if inspect.isawaitable(result):
+                    return bool(await result)
                 return True
             except Exception:
                 log.exception("mail send failed")
@@ -884,10 +894,10 @@ async def mark_past_due(db, models, sub, notify: bool = True):
                 "payment details within 7 days to keep your plan.",
                 link="/account?tab=plan")
             if user.email:
-                send_mail(user.email, "Payment failed — 7 days to fix it",
-                          "Your Quick IMG Convert subscription payment did not "
-                          "go through. Please update your payment details "
-                          "within 7 days to keep your plan.")
+                await send_mail(user.email, "Payment failed — 7 days to fix it",
+                                "Your Quick IMG Convert subscription payment did not "
+                                "go through. Please update your payment details "
+                                "within 7 days to keep your plan.")
     return sub
 
 
@@ -920,9 +930,9 @@ async def expire_subscription(db, models, sub, reason: str = "expired"):
             "Your paid plan has ended and your account is now on the free plan.",
             link="/pricing")
         if user.email:
-            send_mail(user.email, "Your subscription has ended",
-                      "Your Quick IMG Convert subscription has ended. Your "
-                      "account is now on the free plan.")
+            await send_mail(user.email, "Your subscription has ended",
+                            "Your Quick IMG Convert subscription has ended. Your "
+                            "account is now on the free plan.")
     await db.flush()
     return sub
 
@@ -1087,12 +1097,12 @@ async def run_grace_sweep(db, models, now: Optional[datetime] = None) -> dict:
                         "before your grace period ends to keep your plan.",
                         link="/account?tab=plan")
                     if user.email:
-                        send_mail(user.email,
-                                  "Reminder: your payment is past due",
-                                  "Your Quick IMG Convert subscription payment "
-                                  "is still past due. Please update your "
-                                  "payment details before your grace period "
-                                  "ends.")
+                        await send_mail(user.email,
+                                        "Reminder: your payment is past due",
+                                        "Your Quick IMG Convert subscription payment "
+                                        "is still past due. Please update your "
+                                        "payment details before your grace period "
+                                        "ends.")
                     reminded += 1
         if sub.status == "canceled" and sub.current_period_end is not None:
             end = sub.current_period_end
