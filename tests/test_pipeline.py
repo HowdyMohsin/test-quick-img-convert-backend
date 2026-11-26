@@ -51,6 +51,10 @@ def app_and_client(tmp_path):
     app.state.pipeline_store = MemoryStore()
     app.state.data_dir = tmp_path / "data"
     app.state.plan_resolver = lambda owner: "anonymous"
+    # Signed-in by default (suspense lock, user order 2026-11-26):
+    # converting needs an account, so convert tests run as a user.
+    # Tests for the anonymous behaviour clear this (set it to None).
+    app.state.test_user_id = "test-user-1"
     return app, TestClient(app), app.state.pipeline_store
 
 
@@ -124,14 +128,34 @@ def test_convert_png_to_jpg_end_to_end(app_and_client, worker):
     assert dl.content[:2] == b"\xff\xd8"
 
 
+def test_convert_requires_sign_in_for_anonymous(app_and_client):
+    # Suspense lock (user order 2026-11-26): an anonymous visitor can
+    # upload (upload-only preview) but converting is refused with a
+    # friendly sign-in message — never a raw code.
+    app, client, _ = app_and_client
+    app.state.test_user_id = None
+    resp = upload(client, make_png_bytes(), "photo.png")
+    assert resp.status_code == 201, resp.text
+    resp = client.post("/v1/convert",
+                       json={"upload_id": resp.json()["id"], "to": "jpg"})
+    assert resp.status_code == 403, resp.text
+    err = resp.json()["error"]
+    assert err["code"] == "signin_required"
+    assert "Sign in" in err["message"]
+    assert "Request failed" not in err["message"]
+
+
 def test_download_requires_auth(app_and_client, worker):
-    _, client, store = app_and_client
+    app, client, store = app_and_client
     resp = upload(client, make_png_bytes(), "photo.png")
     job = client.post("/v1/convert",
                       json={"upload_id": resp.json()["id"], "to": "jpg"}).json()
     worker.run_once()
     # No token and a different owner (different user-agent -> different
-    # anonymous owner key) -> 403.
+    # anonymous owner key) -> 403. The "other" client must be anonymous:
+    # app.state.test_user_id is shared by every TestClient on this app,
+    # so clear it — otherwise the other client is the same signed-in user.
+    app.state.test_user_id = None
     other = TestClient(client.app)
     resp = other.get(f"/v1/jobs/{job['id']}/download",
                      headers={"user-agent": "someone-else"})
@@ -346,7 +370,7 @@ def test_editor_file_rejects_non_image_for_basic(app_and_client):
 
 
 def test_upload_file_endpoint(app_and_client):
-    _, client, _ = app_and_client
+    app, client, _ = app_and_client
     png = make_png_bytes()
     upload_id = upload(client, png, "photo.png").json()["id"]
     resp = client.get(f"/v1/uploads/{upload_id}/file")
@@ -354,7 +378,10 @@ def test_upload_file_endpoint(app_and_client):
     assert resp.content == png
     assert resp.headers["content-type"].startswith("image/png")
     assert resp.headers["content-disposition"].startswith("attachment")
-    # Another anonymous owner cannot fetch it.
+    # Another anonymous owner cannot fetch it. The "other" client must
+    # be anonymous: app.state.test_user_id is shared by every TestClient
+    # on this app, so clear it — otherwise it is the same signed-in user.
+    app.state.test_user_id = None
     other = TestClient(client.app)
     resp = other.get(f"/v1/uploads/{upload_id}/file",
                      headers={"user-agent": "someone-else"})

@@ -71,6 +71,7 @@ from app.admin_auth import (
     validate_admin_password,
 )
 from app.audit import audit as audit_log_write, diff_dicts
+from app.deps import DEFAULT_SITE_URL
 from app.pipeline import PLAN_LIMITS
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -1299,7 +1300,8 @@ async def team_reset_link(
         raise admin_error(404, "admin_not_found", "No admin with that id exists.",
                           "Check the admin id and try again.")
     token = make_admin_reset_token(str(target.id))
-    base_url = (await _get_setting(db, "site_url", None)) or os.environ.get("SITE_URL", "")
+    base_url = ((await _get_setting(db, "site_url", None)) or os.environ.get("SITE_URL", "")
+                or DEFAULT_SITE_URL)
     base_url = str(base_url).rstrip("/") if base_url else ""
     reset_link = f"{base_url}/admin/reset-password?token={token}" if base_url else f"/admin/reset-password?token={token}"
     await audit_log_write(
@@ -1424,11 +1426,12 @@ async def _all_settings(db: AsyncSession) -> dict:
         values["site_name"] = "Quick IMG Convert"
     if not values.get("site_url"):
         # No site_url row in site_settings (fresh deploy), or a row saved
-        # empty: fall back to the SITE_URL env var so the General page
-        # never shows an empty field. An empty string must be treated
-        # like a missing value — otherwise one save from the empty form
-        # would persist "" and block the fallback forever.
-        values["site_url"] = os.environ.get("SITE_URL", "") or None
+        # empty: fall back to the SITE_URL env var, then to the code
+        # default (DEFAULT_SITE_URL, the test frontend URL) so the
+        # General page never shows an empty field. An empty string must
+        # be treated like a missing value — otherwise one save from the
+        # empty form would persist "" and block the fallback forever.
+        values["site_url"] = os.environ.get("SITE_URL", "") or DEFAULT_SITE_URL
     if values.get("pkr_per_usd") is None:
         values["pkr_per_usd"] = float(os.environ.get("PKR_PER_USD", "0") or 0) or None
     if values.get("quota_tz") is None:
@@ -1530,8 +1533,8 @@ async def get_general_settings(
         values["site_name"] = "Quick IMG Convert"
     if not values.get("site_url"):
         # Same empty-string trap as _all_settings: a row saved empty
-        # must not block the SITE_URL env fallback.
-        values["site_url"] = os.environ.get("SITE_URL", "") or None
+        # must not block the SITE_URL env / code-default fallback.
+        values["site_url"] = os.environ.get("SITE_URL", "") or DEFAULT_SITE_URL
     if values.get("pkr_per_usd") is None:
         values["pkr_per_usd"] = float(os.environ.get("PKR_PER_USD", "0") or 0) or None
     if values.get("quota_tz") is None:
@@ -1584,7 +1587,7 @@ async def patch_general_settings(
         await _set_setting(db, key, value)
     after = {k: await _get_setting(db, k) for k in GENERAL_SETTING_KEYS}
     if not after.get("site_url"):
-        after["site_url"] = os.environ.get("SITE_URL", "") or None
+        after["site_url"] = os.environ.get("SITE_URL", "") or DEFAULT_SITE_URL
     await audit_log_write(db, admin.email, "settings.general", "general",
                           diff_dicts(before, after), after, _client_ip(request))
     await db.commit()

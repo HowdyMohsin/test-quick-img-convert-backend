@@ -25,13 +25,21 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+# Code default for the public site URL (user order 2026-11-26): when
+# neither the SITE_URL env var nor the database holds a site_url, the
+# admin General page and email/checkout links use this instead of an
+# empty field. The owner will not set SITE_URL himself, so the code
+# supplies it.
+DEFAULT_SITE_URL = "https://test-quick-img-convert-frontend.vercel.app"
+
+
 @dataclass
 class Settings:
     database_url: str = field(default_factory=lambda: _env(
         "DATABASE_URL", "sqlite+aiosqlite:///./dev.db"))
     secret_key: str = field(default_factory=lambda: _env("SECRET_KEY", ""))
     app_secret: str = field(default_factory=lambda: _env("APP_SECRET", ""))
-    site_url: str = field(default_factory=lambda: _env("SITE_URL", "http://localhost:3000"))
+    site_url: str = field(default_factory=lambda: _env("SITE_URL", DEFAULT_SITE_URL))
     quota_tz: str = field(default_factory=lambda: _env("QUOTA_TZ", "Asia/Karachi"))
     data_dir: str = field(default_factory=lambda: _env("DATA_DIR", "./data"))
     retention_hours: int = field(default_factory=lambda: int(_env("RETENTION_HOURS", "24")))
@@ -45,16 +53,17 @@ class Settings:
     google_client_id: str = field(default_factory=lambda: _env("GOOGLE_CLIENT_ID", ""))
     pkr_per_usd: float = field(default_factory=lambda: float(_env("PKR_PER_USD", "280")))
     approval_window_hours: int = field(default_factory=lambda: int(_env("APPROVAL_WINDOW_HOURS", "24")))
-    # TEMPORARY (test-only, user order 2026-11-26): email verification
-    # gating for registration + purchase. Default ON (true) — the
-    # localhost zip and live behaviour are unchanged. Set
-    # REQUIRE_EMAIL_VERIFICATION=false on the test deployment only so
-    # unverified users can register straight through and check out
-    # without verifying first. Re-enable by removing the variable or
-    # setting it to "true". The verification code, OTP endpoints and
-    # email templates are NOT deleted — only gated behind this flag.
-    require_email_verification: bool = field(default_factory=lambda: _env(
-        "REQUIRE_EMAIL_VERIFICATION", "true").lower() != "false")
+    # Email verification is OFF in the code itself (user order
+    # 2026-11-26 — backend rewrite, no env var). There is no
+    # REQUIRE_EMAIL_VERIFICATION variable any more: a plain redeploy
+    # leaves verification off, and nothing has to be set on Render.
+    # Registration lands straight on the account, checkout never asks
+    # for verification, and change-email applies immediately. The
+    # verification code, OTP endpoints, email templates and the
+    # /verify-email page are NOT deleted — only gated behind this flag,
+    # so re-enabling is one line: set this back to True (or restore the
+    # env-var read).
+    require_email_verification: bool = False
 
     @property
     def is_https(self) -> bool:

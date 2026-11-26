@@ -277,28 +277,25 @@ def test_verify_email_flow(env_client):
     assert c.get("/v1/me").json()["user"]["email_verified"] is True
 
 
-def test_resend_verification_cooldown(env_client):
+def test_resend_verification_no_cooldown_while_off(env_client):
+    # Verification is OFF in the code (user order 2026-11-26): the
+    # endpoint returns success immediately without sending anything,
+    # and the 60-second cooldown behind the flag is not applied —
+    # a second immediate resend also returns 200. The cooldown code
+    # stays in place for the re-enable.
     c = env_client
     assert register(c).status_code == 200
-    # Register already sent a verification email, so an immediate
-    # resend is inside the 60-second cooldown.
     r = post(c, "/v1/auth/resend-verification")
-    assert r.status_code == 429
-    assert r.json()["error"]["code"] == "resend_cooldown"
-    # Age the registration token past the cooldown, then resend works.
-    user_id = c.get("/v1/me").json()["user"]["id"]
-
-    def _age(s):
-        from datetime import datetime, timedelta, timezone
-
-        from app.models import EmailToken
-
-        token = s.query(EmailToken).filter_by(user_id=user_id, kind="verify").one()
-        token.created_at = datetime.now(timezone.utc) - timedelta(seconds=61)
-
-    db_write(c.db_path, _age)
+    assert r.status_code == 200, r.text
     r2 = post(c, "/v1/auth/resend-verification")
     assert r2.status_code == 200, r2.text
+
+    def _count(s):
+        from app.models import EmailToken
+        return s.query(EmailToken).filter_by(kind="verify").count()
+    out = []
+    db_write(c.db_path, lambda s: out.append(_count(s)))
+    assert out[0] == 0  # no verification token was created
 
 
 def test_change_password_revokes_other_sessions(env_client):
@@ -316,16 +313,17 @@ def test_change_password_revokes_other_sessions(env_client):
     assert other.get("/v1/me").status_code == 401  # other session revoked
 
 
-def test_change_email_swaps_only_after_click(env_client):
+def test_change_email_token_click_swaps_email(env_client):
+    # Verification is OFF in the code (user order 2026-11-26), so the
+    # change-email endpoint applies the new address immediately and
+    # issues no token — that half is covered by
+    # test_change_email_applies_immediately_when_verification_off.
+    # This test covers the other half directly: clicking a change_email
+    # token still swaps the address (the link handler stays live for
+    # the re-enable), using a token seeded the way the endpoint does.
     c = env_client
     assert register(c).status_code == 200
     user_id = c.get("/v1/me").json()["user"]["id"]
-    r = post(c, "/v1/auth/change-email",
-             {"password": VALID_PASSWORD, "new_email": "alice.new@example.com"})
-    assert r.status_code == 200, r.text
-    assert c.get("/v1/me").json()["user"]["email"] == "alice@example.com"
-    # The token was created by the endpoint; find its cleartext via a
-    # fresh token inserted the same way the endpoint does.
     insert_email_token(c.db_path, user_id, "change_email", "change-token-1",
                        new_email="alice.new@example.com")
     r2 = post(c, "/v1/auth/verify-email", {"token": "change-token-1"})

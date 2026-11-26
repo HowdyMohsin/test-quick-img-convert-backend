@@ -242,10 +242,15 @@ def test_settings_site_url_blank_save_falls_back_to_env(client, monkeypatch):
     assert client.get("/admin/settings").json()["site_url"] == "https://example.test"
 
 
-def test_settings_site_url_unset_env_returns_none(client, monkeypatch):
+def test_settings_site_url_unset_env_returns_code_default(client, monkeypatch):
+    # Code default (user order 2026-11-26): with no SITE_URL env var
+    # and no DB row, the General page shows the test frontend URL —
+    # never an empty field.
+    from app.deps import DEFAULT_SITE_URL
     login_super(client)
     monkeypatch.delenv("SITE_URL", raising=False)
-    assert client.get("/admin/settings").json()["site_url"] is None
+    assert client.get("/admin/settings").json()["site_url"] == DEFAULT_SITE_URL
+    assert DEFAULT_SITE_URL == "https://test-quick-img-convert-frontend.vercel.app"
 
 
 def test_settings_site_url_db_value_wins_over_env(client, monkeypatch):

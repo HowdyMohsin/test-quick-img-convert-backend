@@ -212,29 +212,16 @@ def test_checkout_usdt_is_one_to_one_with_warning(client):
     assert body["warning"] == "send only USDT on the TRON network"
 
 
-def test_checkout_requires_verified_email(client):
+def test_checkout_allowed_without_verified_email(client):
+    # Email verification is OFF in the code (user order 2026-11-26):
+    # the verified-email checkout gate is open — an unverified user
+    # checks out like everyone else. (The gate code stays in place for
+    # a later re-enable.)
     CURRENT_USER["id"] = "user-2"
     r = client.post("/v1/payments/checkout", json={
         "plan": "basic", "interval": "monthly", "provider": "manual_jazzcash"})
-    assert r.status_code == 403, r.text
-    assert r.json()["error"]["code"] == "email_not_verified"
-
-
-def test_checkout_unverified_allowed_when_verification_off(client, monkeypatch):
-    # TEMPORARY flag (user order 2026-11-26): with
-    # REQUIRE_EMAIL_VERIFICATION=false the verified-email gate is open.
-    from app.deps import reset_settings
-    monkeypatch.setenv("REQUIRE_EMAIL_VERIFICATION", "false")
-    reset_settings()
-    try:
-        CURRENT_USER["id"] = "user-2"
-        r = client.post("/v1/payments/checkout", json={
-            "plan": "basic", "interval": "monthly", "provider": "manual_jazzcash"})
-        assert r.status_code == 200, r.text
-        assert r.json()["display_currency"] == "PKR"
-    finally:
-        monkeypatch.delenv("REQUIRE_EMAIL_VERIFICATION", raising=False)
-        reset_settings()
+    assert r.status_code == 200, r.text
+    assert r.json()["display_currency"] == "PKR"
 
 
 # ------------------------------------------------------- Stripe test mode

@@ -163,6 +163,10 @@ def app_and_client(tmp_path):
     app.state.pipeline_store = MemoryStore()
     app.state.data_dir = tmp_path / "data"
     app.state.plan_resolver = lambda owner: "anonymous"
+    # Signed-in by default (suspense lock, user order 2026-11-26): the
+    # plan stays "anonymous" via plan_resolver, so the feature locks
+    # below still trigger — only the identity is a user, not a visitor.
+    app.state.test_user_id = "test-user-1"
     return app, TestClient(app), app.state.pipeline_store
 
 
@@ -178,7 +182,7 @@ def test_features_endpoint_anonymous_all_off(app_and_client):
                            "batch_rename": False, "target_size": False}
 
 
-def test_convert_gps_option_locked_for_anonymous(app_and_client):
+def test_convert_gps_option_locked_for_anonymous_plan(app_and_client):
     _, client, _ = app_and_client
     up = _upload(client, make_gps_jpeg_bytes(), "gps.jpg")
     assert up.status_code == 201
@@ -189,7 +193,7 @@ def test_convert_gps_option_locked_for_anonymous(app_and_client):
     assert "feature_locked" in resp.text
 
 
-def test_convert_target_size_locked_for_anonymous(app_and_client):
+def test_convert_target_size_locked_for_anonymous_plan(app_and_client):
     _, client, _ = app_and_client
     up = _upload(client, make_noisy_jpeg_bytes(), "noisy.jpg")
     assert up.status_code == 201

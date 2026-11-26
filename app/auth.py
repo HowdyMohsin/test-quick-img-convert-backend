@@ -388,10 +388,10 @@ async def register(
         "Your account is ready. You get 25 free conversions every day.",
         href="/account",
     )
-    # TEMPORARY (test-only): when REQUIRE_EMAIL_VERIFICATION=false the
-    # verification link email and the OTP code are skipped entirely, so
-    # registration lands straight on the account. The verification
-    # endpoints stay live for when the flag is turned back on.
+    # Email verification is OFF in the code (user order 2026-11-26):
+    # the verification link email and the OTP code are skipped
+    # entirely, so registration lands straight on the account. The
+    # verification endpoints stay live for when the flag is turned back on.
     otp_sent = False
     if get_settings().require_email_verification:
         await _send_verification(db, user)
@@ -668,10 +668,10 @@ async def resend_verification(
     session, _ = await get_session_and_user(request, db)
     require_csrf(request, session)
     rate_limit_or_429(f"resend:{user.id}", 3, 3600, "verification email")
-    # TEMPORARY (test-only): with REQUIRE_EMAIL_VERIFICATION=false no
-    # verification email is sent anywhere on the site. The endpoint stays
-    # live and returns the usual success shape so no caller hits a dead
-    # end; it comes back with one env change.
+    # Email verification is OFF in the code (user order 2026-11-26):
+    # no verification email is sent anywhere on the site. The endpoint
+    # stays live and returns the usual success shape so no caller hits
+    # a dead end; it comes back when the flag is turned back on.
     if not get_settings().require_email_verification:
         return {"message": "Verification email sent."}
     recent = await db.execute(
@@ -787,9 +787,9 @@ async def resend_otp(
                       "hint": "Wait a minute and try again."},
             "retry_after": wait,
         })
-    # TEMPORARY (test-only): with REQUIRE_EMAIL_VERIFICATION=false no
-    # OTP code is issued anywhere on the site. Same success shape, no
-    # code — the OTP screen is unreachable while the flag is off.
+    # Email verification is OFF in the code (user order 2026-11-26):
+    # no OTP code is issued anywhere on the site. Same success shape,
+    # no code — the OTP screen is unreachable while the flag is off.
     if not get_settings().require_email_verification:
         return {"ok": True, "message": "A new verification code was sent."}
     await _issue_otp(db, user)
@@ -846,9 +846,10 @@ async def change_email(
         raise api_error(409, "email_taken",
                         "An account with this email already exists.",
                         "Choose a different email address.")
-    # TEMPORARY (test-only): with REQUIRE_EMAIL_VERIFICATION=false the
-    # new email is applied immediately — no verification link is sent
-    # and no token is created. Default behaviour (link flow) is below.
+    # Email verification is OFF in the code (user order 2026-11-26):
+    # the new email is applied immediately — no verification link is
+    # sent and no token is created. The link flow below is the
+    # behaviour when the flag is turned back on.
     if not get_settings().require_email_verification:
         user.email = new_email
         await db.commit()

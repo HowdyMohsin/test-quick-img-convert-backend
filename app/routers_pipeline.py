@@ -14,7 +14,10 @@ The router keeps working on a bare test app with no database: when the
 pipeline store is a ``MemoryStore`` (tests) it resolves anonymous owners
 with seeded limits and never touches the database; ``app.state.
 plan_resolver`` (a callable owner_key -> plan) still overrides the plan
-for tests.
+for tests, and ``app.state.test_user_id`` (a user id string) forces a
+signed-in owner without a database, so convert tests can run as a user
+while anonymous tests clear it. Only the identity is faked — the plan
+still comes from ``plan_resolver`` / the resolved limits.
 
 Rate limiting lives at the app level (``app.rate_limit``); this router
 does not duplicate it. All errors use the shared shape
@@ -212,6 +215,13 @@ async def _resolve_owner(
         if forced:
             resolved["plan"] = forced
             resolved["limits"] = dict(PLAN_LIMITS.get(forced, resolved["limits"]))
+    # Test hook (see module docstring): force a signed-in owner without
+    # a database. Only the identity is faked — the plan above is kept.
+    test_user = getattr(request.app.state, "test_user_id", None)
+    if test_user:
+        resolved["user_id"] = test_user
+        resolved["owner_key"] = user_owner_key(test_user)
+        resolved["quota_keys"] = [user_owner_key(test_user)]
     return resolved
 
 
@@ -293,6 +303,19 @@ async def upload_file(request: Request, file: UploadFile = File(...),
 async def convert(request: Request, body: ConvertBody,
                   owner: dict = Depends(_resolve_owner)):
     store = get_store(request)
+    # Suspense lock (user order 2026-11-26): converting needs a signed-in
+    # account. Anonymous visitors can upload and preview, but the convert
+    # call itself is refused with a friendly sign-in message — never a
+    # raw code. The UI locks "Convert to" + the Convert button for
+    # anonymous users with files staged; this is the API backstop, so the
+    # rule cannot be bypassed from the browser console. Consequence:
+    # anonymous users can no longer convert without an account — the
+    # anonymous 5/day is upload-only preview until they sign in free.
+    if owner["user_id"] is None:
+        return error_response(PipelineError(
+            "signin_required", "Sign in — it's free — to convert your files.",
+            "Create a free account and convert right away; no email verification needed.",
+            status=403))
     # Plan-gated conversion settings (backstop for the UI gating): a plan
     # without the flag cannot smuggle the option through the API.
     _settings = body.settings or {}
