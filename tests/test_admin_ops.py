@@ -2,9 +2,13 @@
 overview, formats shape + toggle, plan archive, settings site_url
 fallback. Uses the conftest client (throwaway SQLite per test)."""
 
+import asyncio
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 from conftest import csrf_headers, login_super
+
+from app.routers_admin import _all_settings, _success_rate
 
 
 def _dates(days_back=29):
@@ -202,3 +206,98 @@ def test_settings_site_url_falls_back_to_env(client, monkeypatch):
     monkeypatch.setenv("SITE_URL", "https://example.test")
     body = client.get("/admin/settings").json()
     assert body["site_url"] == "https://example.test"
+
+
+def test_settings_site_url_empty_row_falls_back_to_env(monkeypatch):
+    """A site_url row saved empty must not block the SITE_URL fallback.
+
+    Regression: the fallback only triggered when the row was missing
+    (``is None``), so one save from the empty General form persisted
+    "" and the field stayed empty forever.
+    """
+
+    class _StubDb:
+        def __init__(self, values):
+            self.values = values
+
+        async def get(self, model, key):
+            if key in self.values:
+                return SimpleNamespace(value=self.values[key])
+            return None
+
+    monkeypatch.setenv("SITE_URL", "https://example.test")
+    body = asyncio.run(_all_settings(_StubDb({"site_url": ""})))
+    assert body["site_url"] == "https://example.test"
+
+
+def test_settings_site_url_blank_save_falls_back_to_env(client, monkeypatch):
+    login_super(client)
+    headers = csrf_headers(client)
+    monkeypatch.setenv("SITE_URL", "https://example.test")
+    # Saving a blank Site URL drops the row instead of persisting "",
+    # so the aggregate still returns the env value afterwards.
+    resp = client.patch("/admin/settings", json={"site_url": ""}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["site_url"] == "https://example.test"
+    assert client.get("/admin/settings").json()["site_url"] == "https://example.test"
+
+
+def test_settings_site_url_unset_env_returns_none(client, monkeypatch):
+    login_super(client)
+    monkeypatch.delenv("SITE_URL", raising=False)
+    assert client.get("/admin/settings").json()["site_url"] is None
+
+
+def test_settings_site_url_db_value_wins_over_env(client, monkeypatch):
+    login_super(client)
+    headers = csrf_headers(client)
+    monkeypatch.setenv("SITE_URL", "https://example.test")
+    resp = client.patch("/admin/settings", json={"site_url": "https://db.example"},
+                        headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert client.get("/admin/settings").json()["site_url"] == "https://db.example"
+
+
+def test_success_rate_helper():
+    # Queued-only: no finished jobs, nothing failed -> 100.0.
+    assert _success_rate(0, 0) == 100.0
+    assert _success_rate(0, 1) == 0.0
+    assert _success_rate(1, 0) == 100.0
+    assert _success_rate(5, 1) == 83.3
+    assert _success_rate(2, 2) == 50.0
+
+
+def test_dashboard_and_reports_success_rate_agree(client):
+    login_super(client)
+    headers = csrf_headers(client)
+    # Seeded: 5 done + 1 failed today, 1 done yesterday.
+    dash = client.get("/admin/dashboard").json()
+    assert dash["kpis"]["success_rate"] == 83.3
+    assert dash["kpis"]["conversions_today"] == 6
+    # Reports over 30 days: 6 done / (6 done + 1 failed).
+    assert client.get("/admin/reports").json()["totals"]["success_rate"] == 85.7
+    # Re-queue the one failed job: today is now 5 done + 1 queued, no
+    # failures. The queued job must not drag the rate down, and both
+    # endpoints must agree (old reports code gave done/total = 85.7).
+    failed = client.get("/admin/jobs?status=failed").json()["items"]
+    assert len(failed) == 1
+    resp = client.post(f"/admin/jobs/{failed[0]['id']}/retry", json={}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    dash = client.get("/admin/dashboard").json()
+    reports = client.get("/admin/reports").json()
+    assert dash["kpis"]["success_rate"] == 100.0
+    assert reports["totals"]["success_rate"] == 100.0
+
+
+def test_user_detail_usage_shape(client):
+    login_super(client)
+    body = client.get(f"/admin/users/{client.user_id}").json()
+    # Seeded user: 5 done + 1 failed today, 1 done yesterday; plan free.
+    assert body["usage"] == {"today": {"used": 6, "limit": 25}, "month": {"used": 7}}
+
+
+def test_users_list_usage_today(client):
+    login_super(client)
+    body = client.get("/admin/users").json()
+    assert body["total"] == 1
+    assert body["items"][0]["usage_today"] == {"used": 6, "limit": 25}

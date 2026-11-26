@@ -71,6 +71,7 @@ from app.admin_auth import (
     validate_admin_password,
 )
 from app.audit import audit as audit_log_write, diff_dicts
+from app.pipeline import PLAN_LIMITS
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -309,6 +310,29 @@ def _day_bounds_utc(day: date, tz: ZoneInfo) -> tuple[datetime, datetime]:
     return start, end
 
 
+def _success_rate(done: int, failed: int) -> float:
+    """Success rate over finished jobs only: done / (done + failed).
+
+    Queued/running jobs have neither succeeded nor failed, so they are
+    excluded from both the numerator and the denominator. With no
+    finished jobs yet there is nothing to fail, so the rate is 100.0.
+    The dashboard and the reports share this helper so the two pages
+    can never disagree.
+    """
+    finished = done + failed
+    return round(100.0 * done / finished, 1) if finished > 0 else 100.0
+
+
+async def _daily_limit(db: AsyncSession, plan_id: str, plan_row=None) -> int:
+    """Daily conversion limit for a plan: database row over seeded defaults."""
+    plan_id = plan_id or "free"
+    if plan_row is None:
+        plan_row = await db.get(Plan, plan_id)
+    if plan_row is not None and isinstance(plan_row.limits, dict) and plan_row.limits.get("daily") is not None:
+        return int(plan_row.limits["daily"])
+    return int(PLAN_LIMITS.get(plan_id, PLAN_LIMITS["free"])["daily"])
+
+
 def _parse_date(value: Optional[str], name: str) -> Optional[date]:
     if not value:
         return None
@@ -362,6 +386,13 @@ async def _set_setting(db: AsyncSession, key: str, value: Any) -> None:
     else:
         row.value = value
         db.add(row)
+
+
+async def _clear_setting(db: AsyncSession, key: str) -> None:
+    """Delete a setting row so the environment default applies again."""
+    row = await db.get(SiteSetting, key)
+    if row is not None:
+        await db.delete(row)
 
 
 def _user_dict(user) -> dict:
@@ -536,11 +567,7 @@ async def dashboard(
             )
         )
     ).scalar_one()
-    success_rate = (
-        round(100.0 * done_today / max(1, done_today + failed_today), 1)
-        if (done_today + failed_today) > 0
-        else 100.0
-    )
+    success_rate = _success_rate(done_today, failed_today)
     active_subs = (
         await db.execute(
             select(func.count()).select_from(Subscription).where(
@@ -707,7 +734,34 @@ async def list_users(
     stmt = stmt.order_by(col.desc() if order.lower() == "desc" else col.asc())
     page, per_page = _page_params(page, per_page)
     users, total, page, per_page = await _paginate(db, stmt, page, per_page)
-    result = _page_response([_user_dict(u) for u in users], total, page, per_page)
+    # Today's usage per user (one grouped query) so the list's Usage
+    # column renders real numbers instead of dashes, same nested shape
+    # the page reads (usage_today.used / usage_today.limit).
+    tz = _quota_tz()
+    today = datetime.now(tz).date()
+    today_start, today_end = _day_bounds_utc(today, tz)
+    used_rows = (
+        await db.execute(
+            select(Job.user_id, func.count())
+            .where(
+                Job.user_id.is_not(None),
+                Job.created_at >= today_start,
+                Job.created_at < today_end,
+            )
+            .group_by(Job.user_id)
+        )
+    ).all()
+    used_today = {str(r[0]): int(r[1]) for r in used_rows}
+    plan_rows = {p.id: p for p in (await db.execute(select(Plan))).scalars().all()}
+    items = []
+    for u in users:
+        d = _user_dict(u)
+        d["usage_today"] = {
+            "used": used_today.get(str(u.id), 0),
+            "limit": await _daily_limit(db, u.plan, plan_rows.get(u.plan or "free")),
+        }
+        items.append(d)
+    result = _page_response(items, total, page, per_page)
     return result
 
 
@@ -767,7 +821,13 @@ async def user_detail(
     ).scalars().all()
     return {
         "user": _user_dict(user),
-        "usage": {"today": int(usage_today), "this_month": int(usage_month)},
+        # Nested shape the admin Usage card reads (usage.today.used /
+        # usage.today.limit / usage.month.used): always real numbers,
+        # 0 when the user has none, so the page never renders dashes.
+        "usage": {
+            "today": {"used": int(usage_today), "limit": await _daily_limit(db, user.plan)},
+            "month": {"used": int(usage_month)},
+        },
         "subscription": _subscription_dict(sub, plan),
         "payment_requests": [_payment_request_dict(r) for r in requests],
         "payments": [
@@ -1360,9 +1420,12 @@ async def _all_settings(db: AsyncSession) -> dict:
         values[key] = await _get_setting(db, key)
     if values.get("site_name") is None:
         values["site_name"] = "Quick IMG Convert"
-    if values.get("site_url") is None:
-        # No site_url row in site_settings (fresh deploy): fall back to the
-        # SITE_URL env var so the General page never shows an empty field.
+    if not values.get("site_url"):
+        # No site_url row in site_settings (fresh deploy), or a row saved
+        # empty: fall back to the SITE_URL env var so the General page
+        # never shows an empty field. An empty string must be treated
+        # like a missing value — otherwise one save from the empty form
+        # would persist "" and block the fallback forever.
         values["site_url"] = os.environ.get("SITE_URL", "") or None
     if values.get("pkr_per_usd") is None:
         values["pkr_per_usd"] = float(os.environ.get("PKR_PER_USD", "0") or 0) or None
@@ -1438,6 +1501,12 @@ async def patch_all_settings(
         if key in data and data[key] is not None and data[key] < 0:
             raise admin_error(422, "invalid_setting", f"{key} cannot be negative.",
                               "Enter zero or a positive number.")
+    if "site_url" in data and not (data.get("site_url") or "").strip():
+        # Clearing the field means "use the environment default": drop
+        # the row so the SITE_URL fallback applies instead of persisting
+        # an empty string that would block it.
+        data.pop("site_url")
+        await _clear_setting(db, "site_url")
     for key, value in data.items():
         await _set_setting(db, key, value)
     after = await _all_settings(db)
@@ -1457,7 +1526,9 @@ async def get_general_settings(
         values[key] = await _get_setting(db, key)
     if values.get("site_name") is None:
         values["site_name"] = "Quick IMG Convert"
-    if values.get("site_url") is None:
+    if not values.get("site_url"):
+        # Same empty-string trap as _all_settings: a row saved empty
+        # must not block the SITE_URL env fallback.
         values["site_url"] = os.environ.get("SITE_URL", "") or None
     if values.get("pkr_per_usd") is None:
         values["pkr_per_usd"] = float(os.environ.get("PKR_PER_USD", "0") or 0) or None
@@ -1501,9 +1572,17 @@ async def patch_general_settings(
     # Maintenance mode keeps the admin panel and webhooks reachable: that
     # behaviour is enforced by the web/API middleware reading this flag;
     # this endpoint only stores it.
+    if "site_url" in data and not (data.get("site_url") or "").strip():
+        # Clearing the field means "use the environment default": drop
+        # the row so the SITE_URL fallback applies instead of persisting
+        # an empty string that would block it.
+        data.pop("site_url")
+        await _clear_setting(db, "site_url")
     for key, value in data.items():
         await _set_setting(db, key, value)
     after = {k: await _get_setting(db, k) for k in GENERAL_SETTING_KEYS}
+    if not after.get("site_url"):
+        after["site_url"] = os.environ.get("SITE_URL", "") or None
     await audit_log_write(db, admin.email, "settings.general", "general",
                           diff_dicts(before, after), after, _client_ip(request))
     await db.commit()
@@ -1950,7 +2029,7 @@ async def _report_base(db: AsyncSession, start_utc: datetime, end_utc: datetime)
         "conversions": int(total),
         "successful": int(done),
         "failed": int(failed),
-        "success_rate": round(100.0 * done / total, 1) if total else 100.0,
+        "success_rate": _success_rate(done, failed),
         "bytes_in": int(bytes_in or 0),
         "bytes_out": int(bytes_out or 0),
     }

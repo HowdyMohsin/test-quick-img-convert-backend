@@ -64,8 +64,7 @@ def test_user_detail_shape(client):
     resp = client.get(f"/admin/users/{client.user_id}")
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["usage"]["today"] == 6
-    assert body["usage"]["this_month"] >= 6
+    assert body["usage"] == {"today": {"used": 6, "limit": 25}, "month": {"used": 7}}
     assert body["subscription"]["plan_id"] == "basic"
     assert len(body["payment_requests"]) == 2
     assert len(body["payments"]) == 1
