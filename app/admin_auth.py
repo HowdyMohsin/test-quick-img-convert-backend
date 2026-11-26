@@ -378,7 +378,16 @@ def _fallback_engine():
         )
         if "+asyncpg" in url:  # pragma: no cover - asyncpg URL kept as-is
             pass
-        _engine = create_async_engine(url, future=True)
+        kwargs: dict = {}
+        if not url.startswith("sqlite"):
+            # Small pool for small PostgreSQL instances (see app/deps.py).
+            # This fallback engine only exists when core app.deps cannot
+            # be imported; in the real app get_db() from deps is used.
+            kwargs["pool_size"] = 5
+            kwargs["max_overflow"] = 2
+            kwargs["pool_pre_ping"] = True
+            kwargs["pool_recycle"] = 300
+        _engine = create_async_engine(url, future=True, **kwargs)
     return _engine
 
 

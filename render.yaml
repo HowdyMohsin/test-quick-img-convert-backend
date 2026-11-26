@@ -12,6 +12,15 @@
 # cannot run on Render's free tier (no free background workers), so this
 # blueprint deploys the API only — see README.md.
 #
+# Lightweight tuning for the 512 MB free instance (the same code runs
+# unchanged on Docker/PC/Oracle): single uvicorn worker, 40 concurrent
+# connections, 5 s keep-alive; small SQLAlchemy pools (async 5 + 2, sync
+# store 3 + 2, pre-ping + 5 min recycle) so one API holds at most 12 DB
+# connections; pip --no-cache-dir so the build keeps no wheel cache; the
+# first-boot pair health check is skipped here (QIC_STARTUP_HEALTH_CHECK=0)
+# because it converts bundled samples in a background thread at boot —
+# the admin formats page shows no health data until a check is run.
+#
 # IMPORTANT — DATABASE_URL: Render's database connection string uses the
 # `postgres://` scheme, but this API uses SQLAlchemy's async engine, which
 # requires `postgresql+asyncpg://`. There is no way to wire it automatically
@@ -25,8 +34,8 @@ services:
     name: quick-img-convert-api
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: ./entrypoint.sh uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: ./entrypoint.sh uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --limit-concurrency 40 --timeout-keep-alive 5
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
@@ -49,6 +58,8 @@ services:
         value: production
       - key: API_DOCS
         value: "false"
+      - key: QIC_STARTUP_HEALTH_CHECK
+        value: "0"
       - key: QUOTA_TZ
         value: Asia/Karachi
       - key: RETENTION_HOURS

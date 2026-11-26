@@ -86,6 +86,20 @@ def get_engine():
         kwargs: dict = {}
         if url.startswith("sqlite"):
             kwargs["connect_args"] = {"check_same_thread": False}
+        else:
+            # Small, explicit pool for small PostgreSQL instances (Render
+            # free tier, and the compose box with max_connections=50):
+            # one single-worker API may hold at most 5 + 2 connections
+            # here; the sync DbStore (app/pipeline.py) holds at most
+            # 3 + 2. pool_pre_ping survives idle connections the server
+            # has dropped, and pool_recycle bounds connection lifetime.
+            # Without this, SQLAlchemy defaults are pool_size=5,
+            # max_overflow=10 per engine, which across the async engine,
+            # the sync store and the worker could approach the 50 limit.
+            kwargs["pool_size"] = 5
+            kwargs["max_overflow"] = 2
+            kwargs["pool_pre_ping"] = True
+            kwargs["pool_recycle"] = 300
         _engine = create_async_engine(url, **kwargs)
         _engine_url = url
         _SessionLocal = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)

@@ -39,6 +39,24 @@ Free-tier limits to know: the web service sleeps after ~15 minutes idle
 (first request after sleep is slow), and the free database expires after
 30 days. For the real launch, the backend belongs on the Oracle VPS.
 
+## Lightweight tuning (512 MB free instance)
+
+The API is tuned to run lean on the free tier, and the same code runs
+unchanged on Docker/PC/Oracle:
+
+- Single uvicorn worker, `--limit-concurrency 40`, 5 s keep-alive.
+- Small database pools: async engine 5 + 2, sync pipeline store 3 + 2
+  (one API holds at most 12 connections), with pre-ping and 5-minute
+  recycle — safe for the small free PostgreSQL.
+- `pip install --no-cache-dir`, so the build keeps no wheel cache.
+- The first-boot pair health check is skipped on Render
+  (`QIC_STARTUP_HEALTH_CHECK=0`); it converts bundled samples in a
+  background thread at boot, which the 512 MB instance does not need.
+  The admin formats page shows no health data until a check is run.
+- Uploads still stream to disk in 1 MB chunks and conversion work stays
+  off the event loop; only the API runs here (no worker on free tier),
+  so conversions queue in the database.
+
 ## Local run
 
 ```bash

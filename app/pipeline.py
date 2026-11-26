@@ -355,6 +355,13 @@ class DbStore:
                 from sqlalchemy.pool import StaticPool
 
                 kwargs["poolclass"] = StaticPool
+        else:
+            # Small pool for small PostgreSQL instances (see app/deps.py):
+            # this sync store may hold at most 3 + 2 connections.
+            kwargs["pool_size"] = 3
+            kwargs["max_overflow"] = 2
+            kwargs["pool_pre_ping"] = True
+            kwargs["pool_recycle"] = 300
         self._engine = create_engine(url, **kwargs)
         # No-op for tables that already exist (the API boot / Alembic
         # creates them); required so the worker process can start alone.

@@ -1,0 +1,11 @@
+# Dev/test-only dependencies — NOT installed on Render or in the Docker
+# image (those install requirements.txt only). Keep runtime packages out
+# of here, and test-only packages out of requirements.txt.
+#
+# - httpx: needed by starlette's TestClient — tests/conftest.py imports
+#   fastapi.testclient, which imports httpx (or httpx2). The API itself
+#   never imports httpx; it was moved out of requirements.txt for the
+#   lightweight Render build.
+# - pytest: the API test suite (api/tests/).
+httpx>=0.27,<1
+pytest>=8,<10
