@@ -475,6 +475,7 @@ class AdminUser(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     email: Mapped[str] = mapped_column(CIText(255), unique=True, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(255))
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(String(30), nullable=False, default="staff")
     permissions: Mapped[dict | None] = mapped_column(JSON)

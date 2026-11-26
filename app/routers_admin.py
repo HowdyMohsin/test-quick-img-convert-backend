@@ -1091,6 +1091,7 @@ async def update_notes(
 class TeamCreateBody(BaseModel):
     email: str
     password: str
+    display_name: Optional[str] = None
     role: str = "staff"
     permissions: dict = Field(default_factory=dict)
 
@@ -1173,6 +1174,7 @@ async def create_team_member(
     permissions = _validate_team_permissions(body.permissions or {})
     new_admin = AdminUser(
         email=email,
+        display_name=(body.display_name or "").strip() or None,
         password_hash=hash_password(body.password),
         role=body.role,
         permissions=permissions,

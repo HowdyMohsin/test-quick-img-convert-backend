@@ -218,6 +218,56 @@ def test_team_crud_and_reset_link(client):
     assert resp.status_code == 422
 
 
+def test_team_create_accepts_display_name_and_dict_permissions(client):
+    # Regression test for the Team > Add admin panel bug: the admin form
+    # used to send no password and permissions as a list of section names,
+    # so creation failed with "Invalid value for password." (and would
+    # then have failed with "Invalid value for permissions."). The form
+    # now sends a password and a dict keyed by section; the name must be
+    # stored and returned instead of silently dropped.
+    login_super(client)
+    headers = csrf_headers(client)
+    resp = client.post(
+        "/admin/team",
+        json={
+            "email": "named@qic.local",
+            "display_name": "Named Admin",
+            "password": "NamedAdminPass123",
+            "role": "staff",
+            "permissions": {"users": ["read", "write"], "dashboard": ["read"]},
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    member = resp.json()
+    assert member["display_name"] == "Named Admin"
+    assert member["permissions"]["users"] == ["read", "write"]
+    # No password at all -> the required field fails validation.
+    resp = client.post(
+        "/admin/team",
+        json={"email": "nopw@qic.local", "role": "staff", "permissions": {}},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+    # Permissions as a list (the old admin form shape) -> rejected.
+    resp = client.post(
+        "/admin/team",
+        json={"email": "list@qic.local", "password": "ListPermsPass123",
+              "role": "staff", "permissions": ["users", "dashboard"]},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+    # Short password -> the backend's friendly 422, not a raw code.
+    resp = client.post(
+        "/admin/team",
+        json={"email": "short@qic.local", "password": "short",
+              "role": "staff", "permissions": {}},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+    assert "at least 12" in resp.json()["error"]["message"]
+
+
 def test_settings_general_and_limits(client):
     login_super(client)
     headers = csrf_headers(client)

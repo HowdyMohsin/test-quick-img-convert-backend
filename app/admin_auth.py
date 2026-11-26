@@ -318,6 +318,7 @@ except Exception:  # pragma: no cover - core models not present yet
             String(36), primary_key=True, default=lambda: str(__import__("uuid").uuid4())
         )
         email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+        display_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
         password_hash: Mapped[str] = mapped_column(Text, nullable=False)
         role: Mapped[str] = mapped_column(String(32), nullable=False, default="staff")
         permissions: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
@@ -641,6 +642,7 @@ def admin_public_dict(admin) -> dict:
     return {
         "id": str(admin.id),
         "email": admin.email,
+        "display_name": getattr(admin, "display_name", None),
         "role": admin.role,
         "permissions": getattr(admin, "permissions", None) or {},
         "active": bool(getattr(admin, "active", True)),
