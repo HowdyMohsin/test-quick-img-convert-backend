@@ -1,0 +1,833 @@
+{
+  "formats": [
+    {
+      "slug": "jpg",
+      "label": "JPG",
+      "category": "Images",
+      "extensions": [
+        "jpg",
+        "jpeg",
+        "jpe"
+      ],
+      "aliases": {
+        "jpeg": "jpg",
+        "jpe": "jpg"
+      },
+      "mime": [
+        "image/jpeg"
+      ],
+      "magic": [
+        "FFD8FF"
+      ],
+      "description": "The standard photo format: small files, universal support, lossy compression.",
+      "uses": [
+        "Photos",
+        "Web images",
+        "Email attachments"
+      ]
+    },
+    {
+      "slug": "png",
+      "label": "PNG",
+      "category": "Images",
+      "extensions": [
+        "png"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/png"
+      ],
+      "magic": [
+        "89504E470D0A1A0A"
+      ],
+      "description": "Lossless image format with full transparency support.",
+      "uses": [
+        "Screenshots",
+        "Logos",
+        "Graphics with transparency"
+      ]
+    },
+    {
+      "slug": "webp",
+      "label": "WebP",
+      "category": "Images",
+      "extensions": [
+        "webp"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/webp"
+      ],
+      "magic": [
+        "52494646????????57454250"
+      ],
+      "description": "Modern web image format: smaller than JPG and PNG, supports transparency and animation.",
+      "uses": [
+        "Web images",
+        "Photos",
+        "Animated images"
+      ]
+    },
+    {
+      "slug": "avif",
+      "label": "AVIF",
+      "category": "Images",
+      "extensions": [
+        "avif"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/avif"
+      ],
+      "magic": [
+        "6674797061766966"
+      ],
+      "description": "Next-generation image format with the best compression of any still-image format.",
+      "uses": [
+        "Web images",
+        "High-quality photos at tiny sizes"
+      ]
+    },
+    {
+      "slug": "gif",
+      "label": "GIF",
+      "category": "Images",
+      "extensions": [
+        "gif"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/gif"
+      ],
+      "magic": [
+        "47494638"
+      ],
+      "description": "Classic format for simple graphics and short animations (256 colours).",
+      "uses": [
+        "Animations",
+        "Memes",
+        "Simple graphics"
+      ]
+    },
+    {
+      "slug": "tiff",
+      "label": "TIFF",
+      "category": "Images",
+      "extensions": [
+        "tiff",
+        "tif"
+      ],
+      "aliases": {
+        "tif": "tiff"
+      },
+      "mime": [
+        "image/tiff"
+      ],
+      "magic": [
+        "49492A00",
+        "4D4D002A"
+      ],
+      "description": "High-quality lossless format used in print and archiving.",
+      "uses": [
+        "Print",
+        "Scanning",
+        "Archiving"
+      ]
+    },
+    {
+      "slug": "bmp",
+      "label": "BMP",
+      "category": "Images",
+      "extensions": [
+        "bmp"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/bmp"
+      ],
+      "magic": [
+        "424D"
+      ],
+      "description": "Uncompressed Windows bitmap format; large files, maximum compatibility.",
+      "uses": [
+        "Windows apps",
+        "Legacy software"
+      ]
+    },
+    {
+      "slug": "heic",
+      "label": "HEIC",
+      "category": "Images",
+      "extensions": [
+        "heic",
+        "heif"
+      ],
+      "aliases": {
+        "heif": "heic"
+      },
+      "mime": [
+        "image/heic",
+        "image/heif"
+      ],
+      "magic": [
+        "6674797068656963",
+        "667479706D696631",
+        "6674797068656978",
+        "6674797068656966"
+      ],
+      "description": "The photo format iPhones use: half the size of JPG at the same quality.",
+      "uses": [
+        "iPhone photos",
+        "Sharing photos with non-Apple devices"
+      ]
+    },
+    {
+      "slug": "ico",
+      "label": "ICO",
+      "category": "Images",
+      "extensions": [
+        "ico"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/vnd.microsoft.icon",
+        "image/x-icon"
+      ],
+      "magic": [
+        "00000100"
+      ],
+      "description": "Windows icon format holding several sizes in one file.",
+      "uses": [
+        "Favicons",
+        "App icons",
+        "Desktop icons"
+      ]
+    },
+    {
+      "slug": "tga",
+      "label": "TGA",
+      "category": "Images",
+      "extensions": [
+        "tga"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/x-tga"
+      ],
+      "magic": [],
+      "description": "Truevision Targa: uncompressed raster format from games and video.",
+      "uses": [
+        "Game textures",
+        "Video production"
+      ]
+    },
+    {
+      "slug": "cr2",
+      "label": "CR2",
+      "category": "Camera RAW",
+      "extensions": [
+        "cr2"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/x-canon-cr2"
+      ],
+      "magic": [
+        "49492A0010000000435232"
+      ],
+      "description": "Canon RAW photo file with the sensor's unprocessed data.",
+      "uses": [
+        "Canon cameras",
+        "Professional photo editing"
+      ]
+    },
+    {
+      "slug": "cr3",
+      "label": "CR3",
+      "category": "Camera RAW",
+      "extensions": [
+        "cr3"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/x-canon-cr3"
+      ],
+      "magic": [
+        "6674797063727878"
+      ],
+      "description": "Canon's newer RAW format (CR3), used by recent EOS cameras.",
+      "uses": [
+        "Canon cameras",
+        "Professional photo editing"
+      ]
+    },
+    {
+      "slug": "nef",
+      "label": "NEF",
+      "category": "Camera RAW",
+      "extensions": [
+        "nef"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/x-nikon-nef"
+      ],
+      "magic": [
+        "4D4D002A"
+      ],
+      "description": "Nikon RAW photo file with the sensor's unprocessed data.",
+      "uses": [
+        "Nikon cameras",
+        "Professional photo editing"
+      ]
+    },
+    {
+      "slug": "arw",
+      "label": "ARW",
+      "category": "Camera RAW",
+      "extensions": [
+        "arw"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/x-sony-arw"
+      ],
+      "magic": [
+        "49492A00"
+      ],
+      "description": "Sony RAW photo file with the sensor's unprocessed data.",
+      "uses": [
+        "Sony cameras",
+        "Professional photo editing"
+      ]
+    },
+    {
+      "slug": "orf",
+      "label": "ORF",
+      "category": "Camera RAW",
+      "extensions": [
+        "orf"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/x-olympus-orf"
+      ],
+      "magic": [
+        "4949524F",
+        "49492A00",
+        "4D4D002A"
+      ],
+      "description": "Olympus / OM System RAW photo file.",
+      "uses": [
+        "Olympus cameras",
+        "Professional photo editing"
+      ]
+    },
+    {
+      "slug": "raf",
+      "label": "RAF",
+      "category": "Camera RAW",
+      "extensions": [
+        "raf"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/x-fujifilm-raf"
+      ],
+      "magic": [
+        "46554A4946494C4D"
+      ],
+      "description": "Fujifilm RAW photo file with the sensor's unprocessed data.",
+      "uses": [
+        "Fujifilm cameras",
+        "Professional photo editing"
+      ]
+    },
+    {
+      "slug": "rw2",
+      "label": "RW2",
+      "category": "Camera RAW",
+      "extensions": [
+        "rw2"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/x-panasonic-rw2"
+      ],
+      "magic": [
+        "49495500"
+      ],
+      "description": "Panasonic / Leica RAW photo file.",
+      "uses": [
+        "Panasonic cameras",
+        "Professional photo editing"
+      ]
+    },
+    {
+      "slug": "dng",
+      "label": "DNG",
+      "category": "Camera RAW",
+      "extensions": [
+        "dng"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/x-adobe-dng"
+      ],
+      "magic": [
+        "49492A00",
+        "4D4D002A"
+      ],
+      "description": "Adobe's open RAW format, used by many cameras and phones.",
+      "uses": [
+        "Mobile RAW",
+        "Archiving RAW photos"
+      ]
+    },
+    {
+      "slug": "pef",
+      "label": "PEF",
+      "category": "Camera RAW",
+      "extensions": [
+        "pef"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/x-pentax-pef"
+      ],
+      "magic": [
+        "4D4D002A"
+      ],
+      "description": "Pentax RAW photo file with the sensor's unprocessed data.",
+      "uses": [
+        "Pentax cameras",
+        "Professional photo editing"
+      ]
+    },
+    {
+      "slug": "mp3",
+      "label": "MP3",
+      "category": "Audio",
+      "extensions": [
+        "mp3"
+      ],
+      "aliases": {},
+      "mime": [
+        "audio/mpeg"
+      ],
+      "magic": [
+        "494433",
+        "FFFB",
+        "FFF3",
+        "FFF2"
+      ],
+      "description": "The universal audio format: plays everywhere, small files.",
+      "uses": [
+        "Music",
+        "Podcasts",
+        "Ringtones"
+      ]
+    },
+    {
+      "slug": "wav",
+      "label": "WAV",
+      "category": "Audio",
+      "extensions": [
+        "wav"
+      ],
+      "aliases": {},
+      "mime": [
+        "audio/wav",
+        "audio/x-wav"
+      ],
+      "magic": [
+        "52494646????????57415645"
+      ],
+      "description": "Uncompressed CD-quality audio; large files, studio standard.",
+      "uses": [
+        "Audio editing",
+        "Mastering",
+        "Archiving"
+      ]
+    },
+    {
+      "slug": "flac",
+      "label": "FLAC",
+      "category": "Audio",
+      "extensions": [
+        "flac"
+      ],
+      "aliases": {},
+      "mime": [
+        "audio/flac"
+      ],
+      "magic": [
+        "664C6143"
+      ],
+      "description": "Lossless audio compression: perfect quality at about half the size of WAV.",
+      "uses": [
+        "Music libraries",
+        "Archiving",
+        "Hi-fi listening"
+      ]
+    },
+    {
+      "slug": "ogg",
+      "label": "OGG",
+      "category": "Audio",
+      "extensions": [
+        "ogg"
+      ],
+      "aliases": {},
+      "mime": [
+        "audio/ogg"
+      ],
+      "magic": [
+        "4F676753"
+      ],
+      "description": "Open audio container, usually with Vorbis audio.",
+      "uses": [
+        "Web audio",
+        "Game audio",
+        "Music"
+      ]
+    },
+    {
+      "slug": "m4a",
+      "label": "M4A",
+      "category": "Audio",
+      "extensions": [
+        "m4a"
+      ],
+      "aliases": {},
+      "mime": [
+        "audio/mp4"
+      ],
+      "magic": [
+        "667479704D3441",
+        "667479704D3442"
+      ],
+      "description": "Apple's audio format (AAC in an MP4 container).",
+      "uses": [
+        "iTunes",
+        "Apple Music",
+        "Podcasts"
+      ]
+    },
+    {
+      "slug": "aac",
+      "label": "AAC",
+      "category": "Audio",
+      "extensions": [
+        "aac"
+      ],
+      "aliases": {},
+      "mime": [
+        "audio/aac"
+      ],
+      "magic": [
+        "FFF1",
+        "FFF9"
+      ],
+      "description": "Efficient compressed audio; the standard for streaming and mobile.",
+      "uses": [
+        "Streaming",
+        "Mobile audio"
+      ]
+    },
+    {
+      "slug": "opus",
+      "label": "Opus",
+      "category": "Audio",
+      "extensions": [
+        "opus"
+      ],
+      "aliases": {},
+      "mime": [
+        "audio/opus"
+      ],
+      "magic": [
+        "4F676753"
+      ],
+      "description": "Open, low-latency codec that sounds great even at very low bitrates.",
+      "uses": [
+        "Voice chat",
+        "Streaming",
+        "Podcasts"
+      ]
+    },
+    {
+      "slug": "aiff",
+      "label": "AIFF",
+      "category": "Audio",
+      "extensions": [
+        "aiff",
+        "aif"
+      ],
+      "aliases": {
+        "aif": "aiff"
+      },
+      "mime": [
+        "audio/aiff"
+      ],
+      "magic": [
+        "464F524D????????41494646"
+      ],
+      "description": "Apple's uncompressed audio format, the Mac equivalent of WAV.",
+      "uses": [
+        "Audio editing",
+        "Mac studios"
+      ]
+    },
+    {
+      "slug": "wma",
+      "label": "WMA",
+      "category": "Audio",
+      "extensions": [
+        "wma"
+      ],
+      "aliases": {},
+      "mime": [
+        "audio/x-ms-wma"
+      ],
+      "magic": [
+        "3026B2758E66CF11A6D900AA0062CE6C"
+      ],
+      "description": "Windows Media Audio, Microsoft's compressed audio format.",
+      "uses": [
+        "Windows media",
+        "Legacy audio"
+      ]
+    },
+    {
+      "slug": "mp4",
+      "label": "MP4",
+      "category": "Video",
+      "extensions": [
+        "mp4"
+      ],
+      "aliases": {},
+      "mime": [
+        "video/mp4"
+      ],
+      "magic": [
+        "6674797069736F6D",
+        "667479706D703432",
+        "667479706D703431",
+        "6674797061766331"
+      ],
+      "description": "The universal video format: plays on every phone, browser and TV.",
+      "uses": [
+        "Videos",
+        "Streaming",
+        "Sharing"
+      ]
+    },
+    {
+      "slug": "mkv",
+      "label": "MKV",
+      "category": "Video",
+      "extensions": [
+        "mkv"
+      ],
+      "aliases": {},
+      "mime": [
+        "video/x-matroska"
+      ],
+      "magic": [
+        "1A45DFA3"
+      ],
+      "description": "Flexible open video container that holds many audio and subtitle tracks.",
+      "uses": [
+        "Movies",
+        "Archiving",
+        "Multi-track video"
+      ]
+    },
+    {
+      "slug": "mov",
+      "label": "MOV",
+      "category": "Video",
+      "extensions": [
+        "mov"
+      ],
+      "aliases": {},
+      "mime": [
+        "video/quicktime"
+      ],
+      "magic": [
+        "6674797071742020"
+      ],
+      "description": "Apple QuickTime video format, common from iPhones and Final Cut.",
+      "uses": [
+        "iPhone video",
+        "Video editing"
+      ]
+    },
+    {
+      "slug": "avi",
+      "label": "AVI",
+      "category": "Video",
+      "extensions": [
+        "avi"
+      ],
+      "aliases": {},
+      "mime": [
+        "video/x-msvideo"
+      ],
+      "magic": [
+        "52494646????????41564920"
+      ],
+      "description": "Classic Windows video container; large files, wide compatibility.",
+      "uses": [
+        "Legacy video",
+        "Windows apps"
+      ]
+    },
+    {
+      "slug": "webm",
+      "label": "WebM",
+      "category": "Video",
+      "extensions": [
+        "webm"
+      ],
+      "aliases": {},
+      "mime": [
+        "video/webm"
+      ],
+      "magic": [
+        "1A45DFA3"
+      ],
+      "description": "Open web video format built for browsers (VP8/VP9 + Opus).",
+      "uses": [
+        "Web video",
+        "Streaming"
+      ]
+    },
+    {
+      "slug": "wmv",
+      "label": "WMV",
+      "category": "Video",
+      "extensions": [
+        "wmv"
+      ],
+      "aliases": {},
+      "mime": [
+        "video/x-ms-wmv"
+      ],
+      "magic": [
+        "3026B2758E66CF11A6D900AA0062CE6C"
+      ],
+      "description": "Windows Media Video, Microsoft's video format.",
+      "uses": [
+        "Windows media",
+        "Legacy video"
+      ]
+    },
+    {
+      "slug": "m4v",
+      "label": "M4V",
+      "category": "Video",
+      "extensions": [
+        "m4v"
+      ],
+      "aliases": {},
+      "mime": [
+        "video/x-m4v"
+      ],
+      "magic": [
+        "667479704D3456",
+        "667479704D3450"
+      ],
+      "description": "Apple's video format, near-identical to MP4.",
+      "uses": [
+        "iTunes video",
+        "Apple devices"
+      ]
+    },
+    {
+      "slug": "3gp",
+      "label": "3GP",
+      "category": "Video",
+      "extensions": [
+        "3gp"
+      ],
+      "aliases": {},
+      "mime": [
+        "video/3gpp"
+      ],
+      "magic": [
+        "66747970336770",
+        "6674797033677036"
+      ],
+      "description": "Mobile video format from early phones; tiny files, low resolution.",
+      "uses": [
+        "Old phones",
+        "MMS video"
+      ]
+    },
+    {
+      "slug": "psd",
+      "label": "PSD",
+      "category": "Documents and vector",
+      "extensions": [
+        "psd"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/vnd.adobe.photoshop"
+      ],
+      "magic": [
+        "38425053"
+      ],
+      "description": "Adobe Photoshop document. Conversion uses the flattened composite image; layers are not preserved.",
+      "uses": [
+        "Photoshop files",
+        "Sharing a preview of a design"
+      ]
+    },
+    {
+      "slug": "svg",
+      "label": "SVG",
+      "category": "Documents and vector",
+      "extensions": [
+        "svg"
+      ],
+      "aliases": {},
+      "mime": [
+        "image/svg+xml"
+      ],
+      "magic": [
+        "3C737667",
+        "3C3F786D6C"
+      ],
+      "description": "Scalable vector graphic: infinitely sharp at any size, defined as text.",
+      "uses": [
+        "Logos",
+        "Icons",
+        "Web graphics"
+      ]
+    },
+    {
+      "slug": "pdf",
+      "label": "PDF",
+      "category": "Documents and vector",
+      "extensions": [
+        "pdf"
+      ],
+      "aliases": {},
+      "mime": [
+        "application/pdf"
+      ],
+      "magic": [
+        "25504446"
+      ],
+      "description": "Portable Document Format: the standard for sharing documents and scans.",
+      "uses": [
+        "Documents",
+        "Scans",
+        "E-books"
+      ]
+    }
+  ]
+}

@@ -4,7 +4,10 @@
 *.db
 *.db-shm
 *.db-wal
-data/
+# Runtime data dir at the repo root only (uploads, local sqlite).
+# NOTE: anchored with / so it does NOT ignore app/data/ — that holds
+# formats.json, a source file the app needs at boot (Catalog loads it).
+/data/
 logs/
 *.log
 
