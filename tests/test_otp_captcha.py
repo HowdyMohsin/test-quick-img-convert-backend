@@ -56,6 +56,104 @@ def test_register_returns_otp_sent_false_without_smtp(env_client, monkeypatch):
     assert resp.json()["otp_sent"] is False
 
 
+def test_register_skips_otp_when_verification_off(env_client, monkeypatch):
+    # TEMPORARY flag (user order 2026-11-26): with
+    # REQUIRE_EMAIL_VERIFICATION=false registration sends no
+    # verification email and issues no OTP code at all.
+    from app.deps import reset_settings
+    monkeypatch.setenv("REQUIRE_EMAIL_VERIFICATION", "false")
+    reset_settings()
+    try:
+        _pin_otp(monkeypatch)
+        resp = register(env_client)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["otp_sent"] is False
+        assert resp.json()["require_email_verification"] is False
+
+        def _count(s):
+            from app.models import EmailOtp
+            return s.query(EmailOtp).count()
+        out = []
+        db_write(env_client.db_path, lambda s: out.append(_count(s)))
+        assert out[0] == 0  # no OTP row was created at all
+    finally:
+        monkeypatch.delenv("REQUIRE_EMAIL_VERIFICATION", raising=False)
+        reset_settings()
+
+
+def test_resend_verification_sends_nothing_when_verification_off(env_client, monkeypatch):
+    # TEMPORARY flag, site-wide expansion (user order 2026-11-26): the
+    # resend endpoint must not send a verification email while off.
+    from app.deps import reset_settings
+    monkeypatch.setenv("REQUIRE_EMAIL_VERIFICATION", "false")
+    reset_settings()
+    try:
+        assert register(env_client).status_code == 200
+        resp = post(env_client, "/v1/auth/resend-verification", {})
+        assert resp.status_code == 200, resp.text
+
+        def _count(s):
+            from app.models import EmailToken
+            return s.query(EmailToken).filter_by(kind="verify").count()
+        out = []
+        db_write(env_client.db_path, lambda s: out.append(_count(s)))
+        assert out[0] == 0  # no verification token was created
+    finally:
+        monkeypatch.delenv("REQUIRE_EMAIL_VERIFICATION", raising=False)
+        reset_settings()
+
+
+def test_resend_otp_issues_nothing_when_verification_off(env_client, monkeypatch):
+    # TEMPORARY flag, site-wide expansion (user order 2026-11-26): the
+    # resend-code endpoint must not issue an OTP code while off.
+    from app.deps import reset_settings
+    monkeypatch.setenv("REQUIRE_EMAIL_VERIFICATION", "false")
+    reset_settings()
+    try:
+        assert register(env_client).status_code == 200
+        resp = post(env_client, "/v1/auth/resend-otp", {"email": "alice@example.com"})
+        assert resp.status_code == 200, resp.text
+
+        def _count(s):
+            from app.models import EmailOtp
+            return s.query(EmailOtp).count()
+        out = []
+        db_write(env_client.db_path, lambda s: out.append(_count(s)))
+        assert out[0] == 0  # no OTP row was created at all
+    finally:
+        monkeypatch.delenv("REQUIRE_EMAIL_VERIFICATION", raising=False)
+        reset_settings()
+
+
+def test_change_email_applies_immediately_when_verification_off(env_client, monkeypatch):
+    # TEMPORARY flag, site-wide expansion (user order 2026-11-26): with
+    # verification off, changing email applies at once — no token, no
+    # verification email to the new address.
+    from test_auth import VALID_PASSWORD
+    from app.deps import reset_settings
+    monkeypatch.setenv("REQUIRE_EMAIL_VERIFICATION", "false")
+    reset_settings()
+    try:
+        resp = register(env_client)
+        assert resp.status_code == 200, resp.text
+        user_id = resp.json()["user"]["id"]
+        resp = post(env_client, "/v1/auth/change-email",
+                    {"new_email": "alice-new@example.com", "password": VALID_PASSWORD})
+        assert resp.status_code == 200, resp.text
+        assert "changed" in resp.json()["message"]
+        out = []
+        def _check(s):
+            from app.models import EmailToken, User
+            user = s.query(User).filter_by(id=user_id).first()
+            out.append((user.email,
+                        s.query(EmailToken).filter_by(kind="change_email").count()))
+        db_write(env_client.db_path, _check)
+        assert out[0] == ("alice-new@example.com", 0)
+    finally:
+        monkeypatch.delenv("REQUIRE_EMAIL_VERIFICATION", raising=False)
+        reset_settings()
+
+
 def test_verify_otp_happy_path(env_client, monkeypatch):
     _pin_otp(monkeypatch)
     assert register(env_client).status_code == 200

@@ -2,7 +2,8 @@
 
 - GET /v1/payments/config — enabled + configured providers, labels and
   flow hints only, never secrets.
-- POST /v1/payments/checkout — rate limit 5/min; verified email required.
+- POST /v1/payments/checkout — rate limit 5/min; verified email required
+  (unless REQUIRE_EMAIL_VERIFICATION=false, test-only).
 - POST /v1/payments/manual/submit — rate limit 3/min; multipart proof.
 - POST /v1/payments/cancel, GET /v1/payments/history, receipt download,
   POST /v1/payments/coupons/validate, GET /v1/payments/link.
@@ -32,6 +33,7 @@ from app.billing import (
     price_for_plan, record_coupon_use, resolve_models, send_mail, utcnow,
     validate_coupon,
 )
+from app.deps import get_settings
 from app.notifications import create_notification
 from app.payments.manual import PROOF_MAX_BYTES, validate_proof
 from app.payments.providers import (
@@ -72,6 +74,12 @@ def _require_verified(user: Any) -> None:
         raise err(403, "account_banned",
                   f"Your account is banned: {getattr(user, 'ban_reason', '') or 'no reason given'}.",
                   "Contact support if you think this is a mistake.")
+    # TEMPORARY (test-only): when REQUIRE_EMAIL_VERIFICATION=false this
+    # checkout / manual-submit gate is open for unverified users. The
+    # default (true) keeps the gate. Re-enable by removing the env var
+    # or setting it to "true".
+    if not get_settings().require_email_verification:
+        return
     if getattr(user, "email_verified_at", None) is None:
         raise err(403, "email_not_verified",
                   "Verify your email before checking out.",

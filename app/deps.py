@@ -45,6 +45,16 @@ class Settings:
     google_client_id: str = field(default_factory=lambda: _env("GOOGLE_CLIENT_ID", ""))
     pkr_per_usd: float = field(default_factory=lambda: float(_env("PKR_PER_USD", "280")))
     approval_window_hours: int = field(default_factory=lambda: int(_env("APPROVAL_WINDOW_HOURS", "24")))
+    # TEMPORARY (test-only, user order 2026-11-26): email verification
+    # gating for registration + purchase. Default ON (true) — the
+    # localhost zip and live behaviour are unchanged. Set
+    # REQUIRE_EMAIL_VERIFICATION=false on the test deployment only so
+    # unverified users can register straight through and check out
+    # without verifying first. Re-enable by removing the variable or
+    # setting it to "true". The verification code, OTP endpoints and
+    # email templates are NOT deleted — only gated behind this flag.
+    require_email_verification: bool = field(default_factory=lambda: _env(
+        "REQUIRE_EMAIL_VERIFICATION", "true").lower() != "false")
 
     @property
     def is_https(self) -> bool:

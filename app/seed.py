@@ -65,7 +65,7 @@ PROVIDERS = [
     ("payoneer_link", "Payoneer", "link"),
     ("lemonsqueezy", "Lemon Squeezy", "auto"),
     ("paddle", "Paddle", "auto"),
-    ("stripe-reserved", "Stripe (reserved)", "auto"),
+    ("stripe", "Stripe", "auto"),
 ]
 
 AD_SLOTS = [
@@ -167,6 +167,13 @@ async def seed(db: AsyncSession) -> dict[str, int]:
         if await db.get(Plan, p["id"]) is None:
             db.add(Plan(**p))
             counts["plans"] += 1
+    # The Stripe row used to be seeded as "stripe-reserved" (test mode
+    # only now, key "stripe"). Rename the old row in place so existing
+    # databases gain the usable row without a duplicate.
+    old_stripe = await db.get(PaymentProvider, "stripe-reserved")
+    if old_stripe is not None and await db.get(PaymentProvider, "stripe") is None:
+        old_stripe.key = "stripe"
+        old_stripe.label = "Stripe"
     for idx, (key, label, flow) in enumerate(PROVIDERS):
         if await db.get(PaymentProvider, key) is None:
             db.add(PaymentProvider(key=key, label=label, flow=flow, enabled=False, sort=idx))

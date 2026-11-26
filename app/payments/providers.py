@@ -33,9 +33,17 @@ Every provider is one class in ``app/payments/`` implementing
 
 Adding a provider: create one file in this package, subclass
 ``PaymentProvider``, add it to :data:`REGISTRY`, and add its env vars to
-``.env.example``. No other file changes. There are no sandbox or
-test-mode toggles anywhere: a provider is either configured with real
-credentials or it does not appear.
+``.env.example``. No other file changes.
+
+Test / sandbox modes: there is no separate test-mode toggle. Each
+provider decides from its own credentials: Stripe accepts TEST keys
+only (``sk_test_`` / ``pk_test_`` — live keys are refused everywhere);
+Paddle sandbox is selected by a ``test_`` client token (the checkout
+response carries ``sandbox: true`` and the frontend loads Paddle.js in
+sandbox mode); Lemon Squeezy test mode uses the store's test-mode
+variant ids and test API key, with the same hosted checkout URL. A
+provider is either configured with real (test or live) credentials or
+it does not appear.
 
 Event names were checked against the providers' public documentation on
 2026-11-24 (Paddle Billing webhook events; Lemon Squeezy event types):

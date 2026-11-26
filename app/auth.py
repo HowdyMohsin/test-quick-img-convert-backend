@@ -388,12 +388,19 @@ async def register(
         "Your account is ready. You get 25 free conversions every day.",
         href="/account",
     )
-    await _send_verification(db, user)
-    _otp_code, otp_sent = await _issue_otp(db, user)
+    # TEMPORARY (test-only): when REQUIRE_EMAIL_VERIFICATION=false the
+    # verification link email and the OTP code are skipped entirely, so
+    # registration lands straight on the account. The verification
+    # endpoints stay live for when the flag is turned back on.
+    otp_sent = False
+    if get_settings().require_email_verification:
+        await _send_verification(db, user)
+        _otp_code, otp_sent = await _issue_otp(db, user)
     return {
         "user": _public_user(user),
         "email_verified": False,
         "otp_sent": otp_sent,
+        "require_email_verification": get_settings().require_email_verification,
         "message": "Account created. Check your inbox to verify your email.",
     }
 
@@ -661,6 +668,12 @@ async def resend_verification(
     session, _ = await get_session_and_user(request, db)
     require_csrf(request, session)
     rate_limit_or_429(f"resend:{user.id}", 3, 3600, "verification email")
+    # TEMPORARY (test-only): with REQUIRE_EMAIL_VERIFICATION=false no
+    # verification email is sent anywhere on the site. The endpoint stays
+    # live and returns the usual success shape so no caller hits a dead
+    # end; it comes back with one env change.
+    if not get_settings().require_email_verification:
+        return {"message": "Verification email sent."}
     recent = await db.execute(
         select(EmailToken).where(
             EmailToken.user_id == user.id,
@@ -774,6 +787,11 @@ async def resend_otp(
                       "hint": "Wait a minute and try again."},
             "retry_after": wait,
         })
+    # TEMPORARY (test-only): with REQUIRE_EMAIL_VERIFICATION=false no
+    # OTP code is issued anywhere on the site. Same success shape, no
+    # code — the OTP screen is unreachable while the flag is off.
+    if not get_settings().require_email_verification:
+        return {"ok": True, "message": "A new verification code was sent."}
     await _issue_otp(db, user)
     return {"ok": True, "message": "A new verification code was sent."}
 
@@ -828,6 +846,13 @@ async def change_email(
         raise api_error(409, "email_taken",
                         "An account with this email already exists.",
                         "Choose a different email address.")
+    # TEMPORARY (test-only): with REQUIRE_EMAIL_VERIFICATION=false the
+    # new email is applied immediately — no verification link is sent
+    # and no token is created. Default behaviour (link flow) is below.
+    if not get_settings().require_email_verification:
+        user.email = new_email
+        await db.commit()
+        return {"message": "Your email has been changed."}
     token = await create_email_token(db, user, "change_email", 24 * 60, new_email=new_email)
     await send_template_email(
         db, "verify_email", new_email,

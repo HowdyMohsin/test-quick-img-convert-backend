@@ -14,6 +14,12 @@ client-side token and opens the checkout with the plan's Paddle price
 id (stored per plan in ``plan_prices``). This module makes no network
 call and creates no charge; the webhook is the source of truth.
 
+Sandbox: Paddle sandbox is selected by the client token — sandbox
+tokens start with ``test_``, live tokens with ``live_``. The checkout
+response carries ``sandbox: true`` for test tokens and the frontend
+loads Paddle.js in sandbox mode. A sandbox price id (from the Paddle
+sandbox dashboard) must be stored per plan for test checkouts.
+
 Event names verified against Paddle Billing's public webhook
 documentation on 2026-11-24; the spec names match.
 """
@@ -95,14 +101,20 @@ class PaddleProvider(PaymentProvider):
             raise err(400, "provider_price_missing",
                       "This plan has no Paddle price configured yet.",
                       "Ask the site owner to add the Paddle price for this plan.")
+        token = str((config or {}).get("client_token") or "")
         return {
             "provider": cls.key,
             "flow": "auto",
             "mode": "paddle_js",
-            "client_token": (config or {}).get("client_token"),
+            "client_token": token,
             "price_id": provider_price_id,
             "amount_cents": amount_cents,
             "currency": "USD",
+            # Paddle sandbox is selected by the client token itself:
+            # sandbox tokens start with "test_", live tokens with "live_".
+            # The frontend loads Paddle.js in sandbox mode when this is
+            # true. No live payment can happen on a sandbox token.
+            "sandbox": token.startswith("test_"),
             "custom_data": {
                 "user_id": str(getattr(user, "id", "")),
                 "plan_id": str(getattr(plan, "id", "")),

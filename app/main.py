@@ -476,6 +476,10 @@ def _register_account_routes(app: FastAPI) -> None:
             "approval_window_text": site_settings.get(
                 "approval_window_text", "Manual payments are reviewed within 24 hours."),
             "maintenance_mode": bool(site_settings.get("maintenance_mode", False)),
+            # TEMPORARY (test-only): the frontend reads this to decide
+            # whether to show the OTP screen after registration and the
+            # "Verify your email first" gate on checkout. Default true.
+            "require_email_verification": get_settings().require_email_verification,
             "plans": plans,
             "providers": providers,
             "announcement": announcement,

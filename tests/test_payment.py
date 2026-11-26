@@ -220,6 +220,156 @@ def test_checkout_requires_verified_email(client):
     assert r.json()["error"]["code"] == "email_not_verified"
 
 
+def test_checkout_unverified_allowed_when_verification_off(client, monkeypatch):
+    # TEMPORARY flag (user order 2026-11-26): with
+    # REQUIRE_EMAIL_VERIFICATION=false the verified-email gate is open.
+    from app.deps import reset_settings
+    monkeypatch.setenv("REQUIRE_EMAIL_VERIFICATION", "false")
+    reset_settings()
+    try:
+        CURRENT_USER["id"] = "user-2"
+        r = client.post("/v1/payments/checkout", json={
+            "plan": "basic", "interval": "monthly", "provider": "manual_jazzcash"})
+        assert r.status_code == 200, r.text
+        assert r.json()["display_currency"] == "PKR"
+    finally:
+        monkeypatch.delenv("REQUIRE_EMAIL_VERIFICATION", raising=False)
+        reset_settings()
+
+
+# ------------------------------------------------------- Stripe test mode
+# Standing order (user, 2026-11-26): apply every test payment method.
+# Stripe is TEST MODE ONLY — only sk_test_/pk_test_ keys work; live keys
+# are refused everywhere in code.
+def test_stripe_test_keys_only():
+    from app.payments.stripe import StripeProvider
+    assert StripeProvider.is_configured(
+        {"secret_key": "sk_test_123", "publishable_key": "pk_test_123"}) is True
+    assert StripeProvider.is_configured(
+        {"secret_key": "sk_live_123", "publishable_key": "pk_live_123"}) is False
+    assert StripeProvider.is_configured(
+        {"secret_key": "sk_test_123", "publishable_key": "pk_live_123"}) is False
+    assert StripeProvider.is_configured({}) is False
+
+
+def test_stripe_checkout_test_mode(monkeypatch):
+    from types import SimpleNamespace
+    from app.payments.stripe import StripeProvider
+    seen = {}
+
+    def fake_post(secret_key, path, data):
+        seen.update(secret_key=secret_key, path=path, data=data)
+        assert secret_key == "sk_test_123"
+        assert path == "checkout/sessions"
+        assert data["mode"] == "subscription"
+        assert data["line_items[0][price_data][unit_amount]"] == "400"
+        assert data["line_items[0][price_data][recurring][interval]"] == "month"
+        return {"id": "cs_test_1", "url": "https://checkout.stripe.com/pay/cs_test_1"}
+
+    monkeypatch.setattr("app.payments.stripe._api_post", fake_post)
+    user = SimpleNamespace(id="user-1", email="buyer@example.com")
+    plan = SimpleNamespace(id="basic", name="Basic")
+    res = StripeProvider.create_checkout(
+        user=user, plan=plan, interval="monthly", amount_cents=400,
+        config={"secret_key": "sk_test_123", "publishable_key": "pk_test_123"})
+    assert res["checkout_url"] == "https://checkout.stripe.com/pay/cs_test_1"
+    assert res["mode"] == "hosted_url"
+    assert seen["data"]["metadata[plan_id]"] == "basic"
+
+
+def test_stripe_checkout_refuses_live_keys():
+    from types import SimpleNamespace
+    from app.billing import ApiError
+    from app.payments.stripe import StripeProvider
+    user = SimpleNamespace(id="user-1", email="buyer@example.com")
+    plan = SimpleNamespace(id="basic", name="Basic")
+    with pytest.raises(ApiError) as exc:
+        StripeProvider.create_checkout(
+            user=user, plan=plan, interval="monthly", amount_cents=400,
+            config={"secret_key": "sk_live_123", "publishable_key": "pk_live_123"})
+    assert exc.value.code == "provider_unavailable"
+
+
+def test_stripe_webhook_verify_and_normalize():
+    import hashlib
+    import hmac as hmac_mod
+    import json
+    import time
+    from app.payments.providers import WebhookVerificationError
+    from app.payments.stripe import StripeProvider
+    secret = "whsec_test"
+    payload = {"id": "evt_test_1", "type": "checkout.session.completed",
+               "data": {"object": {"id": "cs_test_1", "subscription": "sub_test_1",
+                                   "customer": "cus_test_1",
+                                   "customer_details": {"email": "buyer@example.com"},
+                                   "metadata": {"user_id": "user-1", "plan_id": "basic",
+                                                "interval": "monthly"}}}}
+    raw = json.dumps(payload).encode()
+    ts = int(time.time())
+    sig = hmac_mod.new(secret.encode(), f"{ts}.".encode() + raw,
+                       hashlib.sha256).hexdigest()
+    event_id, event_type, out = StripeProvider.verify_webhook_with_secret(
+        raw, {"Stripe-Signature": f"t={ts},v1={sig}"}, secret)
+    assert event_id == "evt_test_1" and event_type == "checkout.session.completed"
+    ev = StripeProvider.normalize_event(event_type, out)
+    assert ev.kind == "activated" and ev.user_id == "user-1" and ev.plan_id == "basic"
+    assert ev.provider_sub_id == "sub_test_1"
+    with pytest.raises(WebhookVerificationError):
+        StripeProvider.verify_webhook_with_secret(
+            raw, {"Stripe-Signature": f"t={ts},v1=deadbeef"}, secret)
+
+
+def test_checkout_stripe_test_mode_end_to_end(client, monkeypatch):
+    from sqlalchemy.orm import Session as SyncSession
+    from app.billing import PaymentProviderRow, encrypt_config
+    from app.payments import stripe as stripe_mod
+    # Enabled Stripe row with TEST keys (removed afterwards).
+    with SyncSession(ENGINE) as s:
+        s.add(PaymentProviderRow(
+            key="stripe", label="Stripe", flow="auto", enabled=True,
+            config=encrypt_config({"secret_key": "sk_test_123",
+                                   "publishable_key": "pk_test_123",
+                                   "webhook_secret": "whsec_test"})))
+        s.commit()
+
+    def fake_post(secret_key, path, data):
+        return {"id": "cs_test_1", "url": "https://checkout.stripe.com/pay/cs_test_1"}
+
+    monkeypatch.setattr(stripe_mod, "_api_post", fake_post)
+    try:
+        CURRENT_USER["id"] = "user-1"
+        r = client.post("/v1/payments/checkout", json={
+            "plan": "basic", "interval": "monthly", "provider": "stripe"})
+        assert r.status_code == 200, r.text
+        assert r.json()["checkout_url"] == "https://checkout.stripe.com/pay/cs_test_1"
+    finally:
+        with SyncSession(ENGINE) as s:
+            row = s.get(PaymentProviderRow, "stripe")
+            if row is not None:
+                s.delete(row)
+                s.commit()
+
+
+# ------------------------------------------------------- Paddle sandbox
+# Standing order (user, 2026-11-26): Paddle sandbox must work the moment
+# sandbox keys exist. The sandbox is selected by the client token itself
+# ("test_…" = sandbox, "live_…" = production).
+def test_paddle_sandbox_flag_from_token():
+    from types import SimpleNamespace
+    from app.payments.paddle import PaddleProvider
+    user = SimpleNamespace(id="user-1", email="buyer@example.com")
+    plan = SimpleNamespace(id="basic", name="Basic")
+    sandbox = PaddleProvider.create_checkout(
+        user=user, plan=plan, interval="monthly", amount_cents=400,
+        config={"client_token": "test_abc123"}, provider_price_id="pri_test_1")
+    assert sandbox["sandbox"] is True
+    assert sandbox["mode"] == "paddle_js"
+    live = PaddleProvider.create_checkout(
+        user=user, plan=plan, interval="monthly", amount_cents=400,
+        config={"client_token": "live_abc123"}, provider_price_id="pri_live_1")
+    assert live["sandbox"] is False
+
+
 def test_checkout_paddle_rejects_coupon_it_cannot_apply(client):
     r = client.post("/v1/payments/checkout", json={
         "plan": "basic", "interval": "monthly",
