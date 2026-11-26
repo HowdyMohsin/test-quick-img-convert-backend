@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -16,6 +18,8 @@ from app.notifications import (
     unread_count,
 )
 from app.popups import get_marketing_payload
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["marketing"])
 notifications_router = APIRouter(prefix="/v1/notifications",
@@ -38,8 +42,16 @@ async def get_notifications(unread_only: bool = False, limit: int = 50,
     models = resolve_models()
     notes = await list_notifications(db, models, user.id, limit=limit,
                                      unread_only=unread_only)
+    payloads = []
+    for n in notes:
+        try:
+            payloads.append(notification_payload(n))
+        except Exception:
+            # One bad row must never take down the whole list.
+            logger.warning("skipping unserializable notification %s",
+                           getattr(n, "id", "?"), exc_info=True)
     return {
-        "notifications": [notification_payload(n) for n in notes],
+        "notifications": payloads,
         "unread": await unread_count(db, models, user.id),
     }
 

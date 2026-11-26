@@ -204,6 +204,7 @@ def create_app() -> FastAPI:
         ("routers_payments", "router"),
         ("routers_ads", "router"),
         ("routers_marketing", "router"),
+        ("routers_marketing", "notifications_router"),
         ("routers_admin", "router"),
         ("routers_admin_payments", "router"),
         ("routers_admin_ads", "router"),
