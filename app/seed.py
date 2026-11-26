@@ -4,7 +4,11 @@ Inserts 3 plans + anonymous rules, 8 payment providers (ALL DISABLED
 until configured), default ad slots, 5 popups + announcement, 10 email
 templates and default site settings. Creates NO users, NO coupons and
 NO demo data. Existing rows are never overwritten, so re-running seed
-after an admin edits a value is safe.
+after an admin edits a value is safe — with one exception: limit keys
+that do not exist yet on a row are added from the seeded defaults (a
+new feature flag must reach plan rows that were created before it
+existed). Values already present on a row, including an explicit
+False an admin set, are never changed.
 """
 
 from __future__ import annotations
@@ -171,6 +175,21 @@ async def seed(db: AsyncSession) -> dict[str, int]:
         if await db.get(Plan, p["id"]) is None:
             db.add(Plan(**p))
             counts["plans"] += 1
+    # Backfill limit keys that are missing on existing plan rows. A row
+    # seeded before a flag existed (e.g. the four converter-feature
+    # flags) has no such key in its stored limits JSON, so the admin
+    # panel — which reads the raw row — shows the flag OFF even though
+    # the code default is ON for Basic/Pro. Only ABSENT keys are added,
+    # from the seeded defaults above; a value already on the row is
+    # never overwritten, so an admin's explicit choice survives every
+    # redeploy. Same in-place-update mechanism as the Stripe rename
+    # below: no migration needed, the next deploy heals old databases.
+    for p in PLANS:
+        row = await db.get(Plan, p["id"])
+        if row is not None and isinstance(row.limits, dict):
+            missing = {k: v for k, v in p["limits"].items() if k not in row.limits}
+            if missing:
+                row.limits = {**row.limits, **missing}
     # The Stripe row used to be seeded as "stripe-reserved" (test mode
     # only now, key "stripe"). Rename the old row in place so existing
     # databases gain the usable row without a duplicate.
@@ -207,5 +226,21 @@ async def seed(db: AsyncSession) -> dict[str, int]:
         if await db.get(SiteSetting, key) is None:
             db.add(SiteSetting(key=key, value=value))
             counts["site_settings"] += 1
+    # Same backfill for the anonymous limits setting: a row seeded
+    # before a flag existed lacks the key, so anonymous visitors would
+    # show the flag from the code default only. Absent keys are added
+    # from ANONYMOUS_LIMITS; present values are never overwritten. The
+    # value may be the plain limits dict (seeded shape) or wrapped in
+    # {"limits": {...}} (both shapes are accepted at read time).
+    anon = await db.get(SiteSetting, "anonymous_limits")
+    if anon is not None and isinstance(anon.value, dict):
+        wrapped = isinstance(anon.value.get("limits"), dict)
+        inner = anon.value["limits"] if wrapped else anon.value
+        missing = {k: v for k, v in ANONYMOUS_LIMITS.items() if k not in inner}
+        if missing:
+            if wrapped:
+                anon.value = {**anon.value, "limits": {**inner, **missing}}
+            else:
+                anon.value = {**anon.value, **missing}
     await db.commit()
     return counts

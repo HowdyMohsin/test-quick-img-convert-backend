@@ -492,8 +492,12 @@ async def editor_file_endpoint(request: Request, upload_id: str,
 
 
 @router.get("/history")
-async def history_endpoint(request: Request, page: int = 1, page_size: int = 20,
+async def history_endpoint(request: Request, response: Response, page: int = 1, page_size: int = 20,
                            owner: dict = Depends(_resolve_owner)):
+    # Per-user data resolved from the session cookie: never let a cache
+    # serve one account's history to another browser.
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["Vary"] = "Cookie"
     store = get_store(request)
     return list_history(store, owner["owner_key"], days=90, page=max(1, page),
                         page_size=min(100, max(1, page_size)))

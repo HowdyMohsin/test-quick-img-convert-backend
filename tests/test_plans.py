@@ -140,6 +140,67 @@ def test_seed_is_idempotent(env_client):
     _run(_t())
 
 
+def test_seed_backfills_new_flag_keys_on_existing_rows(env_client):
+    # Regression: plan rows seeded BEFORE a flag existed (e.g. the four
+    # converter-feature flags, added in 2bf8bee) have no such key in
+    # their stored limits JSON, so the admin panel — which reads the raw
+    # row — showed every flag OFF for Basic/Pro on the live database,
+    # even though a fresh seed is correct. Seed must add ABSENT keys
+    # from the seeded defaults on existing rows, and must never
+    # overwrite a value already present (an admin's explicit False).
+    c = env_client
+    flags = ("gps_remover", "compare", "batch_rename", "target_size")
+
+    def _strip(session):
+        from app.models import Plan, SiteSetting
+
+        for plan in session.query(Plan).all():
+            limits = dict(plan.limits or {})
+            for key in flags:
+                limits.pop(key, None)
+            if plan.id == "basic":
+                # An admin explicitly turned GPS off for Basic: seed
+                # must leave that choice alone.
+                limits["gps_remover"] = False
+            plan.limits = limits
+        row = session.get(SiteSetting, "anonymous_limits")
+        assert row is not None
+        value = dict(row.value or {})
+        for key in flags:
+            value.pop(key, None)
+        row.value = value
+
+    _db_write(c.db_path, _strip)
+
+    async def _t():
+        from app import deps
+
+        deps.reset_engine()
+        db = deps.get_sessionmaker()()
+        try:
+            from app.seed import seed
+
+            await seed(db)
+        finally:
+            await db.close()
+
+    _run(_t())
+
+    site = c.get("/v1/site")
+    assert site.status_code == 200, site.text
+    plans = {p["id"]: p for p in site.json()["plans"]}
+    for key in flags:
+        assert plans["free"]["limits"][key] is False
+        assert plans["anonymous"]["limits"][key] is False
+        assert plans["pro"]["limits"][key] is True
+    # Basic: the admin's explicit gps_remover=False survives; the
+    # other three absent keys are backfilled True.
+    assert plans["basic"]["limits"]["gps_remover"] is False
+    assert plans["basic"]["limits"]["compare"] is True
+    assert plans["basic"]["limits"]["batch_rename"] is True
+    assert plans["basic"]["limits"]["target_size"] is True
+
+
 # ---------------------------------------------------------------- PKR + coupons
 
 def test_pkr_rounding():

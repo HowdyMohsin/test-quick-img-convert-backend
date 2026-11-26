@@ -165,7 +165,7 @@ async def create_session(
 
 
 def _adopt_device_uploads(request: Request, user: User) -> None:
-    """Move this browser's guest uploads/jobs to the just-signed-in user.
+    """Move this browser's recent guest uploads/jobs to the just-signed-in user.
 
     A guest's files belong to the device key (``device:<id>`` from the
     signed ``qic_device`` cookie); after sign-in the owner key becomes
@@ -174,6 +174,11 @@ def _adopt_device_uploads(request: Request, user: User) -> None:
     the upload working. Best-effort: a failure here must never break
     sign-in — the user can always re-upload, but the common case
     (upload as guest, then sign in to convert) must keep working.
+
+    Bounded by ``reassign_owner``: only rows created within the last
+    60 minutes move, and a job moves only with its upload — a stale
+    device-owned job from an earlier anonymous session never lands in
+    a fresh account's history.
     """
     try:
         device_id, is_new = get_or_create_device_id(request)

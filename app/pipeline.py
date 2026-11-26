@@ -825,8 +825,17 @@ def delete_upload(store, owner_key: str, upload_id: str) -> None:
     store.delete_upload(upload_id)
 
 
-def reassign_owner(store, old_key: str, new_key: str, user_id: str | None = None) -> int:
-    """Move every upload and job owned by ``old_key`` to ``new_key``.
+# Guest adoption window: only rows created this recently move to a
+# newly signed-in user. A device key can outlive the browser session
+# that created it, so an unbounded adoption would pull a stale
+# device-owned job from an earlier anonymous session into a fresh
+# account's history.
+ADOPTION_MAX_AGE = timedelta(minutes=60)
+
+
+def reassign_owner(store, old_key: str, new_key: str, user_id: str | None = None,
+                   max_age: timedelta | None = ADOPTION_MAX_AGE) -> int:
+    """Move recent uploads and their jobs owned by ``old_key`` to ``new_key``.
 
     Used when a guest signs in: files uploaded while signed out belong
     to the device key, and the first convert after sign-in would
@@ -837,13 +846,36 @@ def reassign_owner(store, old_key: str, new_key: str, user_id: str | None = None
     signed-in quota starts fresh. Runs through the stores' public
     methods, so MemoryStore and DbStore behave the same. Returns the
     number of records moved.
+
+    Bound: only rows created within ``max_age`` move, and a job moves
+    only when its upload was adopted in the same call. A stale
+    device-owned job from an earlier anonymous session therefore never
+    lands in a freshly registered account's history.
     """
+    cutoff = _now() - max_age if max_age is not None else None
+
+    def _fresh(created_at) -> bool:
+        if cutoff is None or created_at is None:
+            return cutoff is None
+        created = created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return created >= cutoff
+
     moved = 0
+    adopted_upload_ids: set[str] = set()
     for up in store.list_uploads(old_key):
+        if not _fresh(up.created_at):
+            continue
         up.owner_key = new_key
         store.save_upload(up)
+        adopted_upload_ids.add(up.id)
         moved += 1
     for job in store.list_jobs(old_key):
+        if not _fresh(job.created_at):
+            continue
+        if job.upload_id not in adopted_upload_ids:
+            continue
         job.owner_key = new_key
         if user_id is not None:
             job.user_id = user_id

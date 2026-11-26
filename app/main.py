@@ -250,8 +250,12 @@ def _now() -> datetime:
 def _register_account_routes(app: FastAPI) -> None:
 
     @app.get("/v1/me")
-    async def get_me(request: Request, db: AsyncSession = Depends(get_db),
+    async def get_me(request: Request, response: Response, db: AsyncSession = Depends(get_db),
                      user: User = Depends(get_current_user)):
+        # Per-user data resolved from the session cookie: never let a
+        # cache serve one account's profile to another browser.
+        response.headers["Cache-Control"] = "no-store, private"
+        response.headers["Vary"] = "Cookie"
         plan = await db.get(Plan, user.plan) if user.plan != "anonymous" else None
         limits = dict(plan.limits) if plan else dict(ANONYMOUS_LIMITS)
         limit = int(limits.get("daily", 25))
