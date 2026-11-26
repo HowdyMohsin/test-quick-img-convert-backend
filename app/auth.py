@@ -58,7 +58,6 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 GENERIC_LOGIN_ERROR = "Email or password is incorrect."
-FORGOT_MESSAGE = "If that email exists, we sent a reset link."
 
 
 # ---------------------------------------------------------------- helpers
@@ -214,10 +213,6 @@ def _verification_link(token: str) -> str:
     return f"{get_settings().site_url.rstrip('/')}/verify-email?token={token}"
 
 
-def _reset_link(token: str) -> str:
-    return f"{get_settings().site_url.rstrip('/')}/reset-password?token={token}"
-
-
 async def _send_verification(db: AsyncSession, user: User) -> None:
     token = await create_email_token(db, user, "verify", 24 * 60)
     await send_template_email(
@@ -238,12 +233,15 @@ async def _send_verification(db: AsyncSession, user: User) -> None:
 OTP_TTL_MINUTES = 10
 OTP_MAX_ATTEMPTS = 5
 OTP_RESEND_COOLDOWN_SECONDS = 60
+RESET_OTP_TTL_MINUTES = 10
 
 
-async def _active_otp(db: AsyncSession, user: User) -> EmailOtp | None:
+async def _active_otp(db: AsyncSession, user: User, purpose: str = "verify") -> EmailOtp | None:
     result = await db.execute(
         select(EmailOtp).where(
-            EmailOtp.user_id == user.id, EmailOtp.used_at.is_(None),
+            EmailOtp.user_id == user.id,
+            EmailOtp.purpose == purpose,
+            EmailOtp.used_at.is_(None),
         ).order_by(EmailOtp.created_at.desc())
     )
     return result.scalars().first()
@@ -254,7 +252,9 @@ async def _issue_otp(db: AsyncSession, user: User) -> tuple[str, bool]:
     email it. Returns (code, sent)."""
     old = await db.execute(
         select(EmailOtp).where(
-            EmailOtp.user_id == user.id, EmailOtp.used_at.is_(None),
+            EmailOtp.user_id == user.id,
+            EmailOtp.purpose == "verify",
+            EmailOtp.used_at.is_(None),
         )
     )
     for row in old.scalars().all():
@@ -262,6 +262,7 @@ async def _issue_otp(db: AsyncSession, user: User) -> tuple[str, bool]:
     code = f"{secrets.randbelow(1_000_000):06d}"
     db.add(EmailOtp(
         user_id=user.id,
+        purpose="verify",
         code_hash=passwords.hash_token(code),
         expires_at=_now() + timedelta(minutes=OTP_TTL_MINUTES),
     ))
@@ -274,6 +275,33 @@ async def _issue_otp(db: AsyncSession, user: User) -> tuple[str, bool]:
         name=user.display_name or "there", code=code,
     )
     return code, sent
+
+
+async def _issue_reset_otp(db: AsyncSession, user: User) -> str:
+    """TEMP (owner order 2026-11-27): mint an 8-digit password-reset
+    code and store only its SHA-256 hash (purpose "reset"). Issuing a
+    new code invalidates any earlier unused reset code for the user.
+    The code is returned to the caller so the frontend can display it
+    at the top of the OTP step; the owner replaces this with real
+    email OTP at the end (email verification). No email is sent."""
+    old = await db.execute(
+        select(EmailOtp).where(
+            EmailOtp.user_id == user.id,
+            EmailOtp.purpose == "reset",
+            EmailOtp.used_at.is_(None),
+        )
+    )
+    for row in old.scalars().all():
+        row.used_at = _now()
+    code = f"{secrets.randbelow(100_000_000):08d}"
+    db.add(EmailOtp(
+        user_id=user.id,
+        purpose="reset",
+        code_hash=passwords.hash_token(code),
+        expires_at=_now() + timedelta(minutes=RESET_OTP_TTL_MINUTES),
+    ))
+    await db.commit()
+    return code
 
 
 def _device_browser(user_agent: str) -> tuple[str, str]:
@@ -597,6 +625,14 @@ async def google_signin(
 async def forgot_password(
     body: ForgotBody, request: Request, db: AsyncSession = Depends(get_db),
 ):
+    """TEMPORARY forgot-password flow (owner order 2026-11-27): the
+    8-digit reset code is RETURNED in the response so the frontend can
+    display it at the top of the OTP step. No reset-link email is sent
+    in this flow, and there is no 60-second resend cooldown (nothing is
+    emailed — the per-IP / per-email hourly rate limits still apply).
+    Unknown / deleted / Google-only emails get 400 ``account_not_found``
+    so the frontend knows not to advance; banned accounts get 403.
+    The owner replaces this with real email OTP at the end."""
     session, _ = await get_session_and_user(request, db)
     require_csrf(request, session)
     ip = client_ip(request)
@@ -605,25 +641,20 @@ async def forgot_password(
     rate_limit_or_429(f"forgot:email:{hash_email(email)}", 3, 3600, "password reset")
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
-    if user is not None and user.deleted_at is None and user.password_hash is not None:
-        # 60-second resend cooldown, enforced silently.
-        recent = await db.execute(
-            select(EmailToken).where(
-                EmailToken.user_id == user.id,
-                EmailToken.kind == "reset",
-                EmailToken.created_at >= _now() - timedelta(seconds=60),
-            )
-        )
-        if recent.scalar_one_or_none() is None:
-            token = await create_email_token(db, user, "reset", 60)
-            await send_template_email(
-                db, "reset_password", user.email,
-                "Reset your password — Quick IMG Convert",
-                "Hi {name},\n\nReset your password by opening this link:\n{link}\n\n"
-                "The link works for 60 minutes.",
-                name=user.display_name or "there", link=_reset_link(token),
-            )
-    return {"message": FORGOT_MESSAGE}
+    if user is None or user.deleted_at is not None or user.password_hash is None:
+        raise api_error(400, "account_not_found",
+                        "No account found for this email.",
+                        "Check the email address, or create an account.")
+    if user.banned:
+        raise api_error(403, "account_banned",
+                        f"Your account is banned. {user.ban_reason or ''}".strip(),
+                        "Contact support if you think this is a mistake.")
+    code = await _issue_reset_otp(db, user)
+    return {
+        "ok": True,
+        "code": code,
+        "message": "Your 8-digit reset code is shown on the next screen. It expires in 10 minutes.",
+    }
 
 
 @router.post("/reset-password")
@@ -730,6 +761,11 @@ class VerifyOtpBody(BaseModel):
     code: str = Field(min_length=1, max_length=10)
 
 
+class VerifyResetOtpBody(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    code: str = Field(min_length=1, max_length=10)
+
+
 class ResendOtpBody(BaseModel):
     email: str = Field(min_length=3, max_length=255)
 
@@ -788,6 +824,61 @@ async def verify_otp(
     return {"ok": True, "message": "Your email is verified."}
 
 
+@router.post("/verify-reset-otp")
+async def verify_reset_otp(
+    body: VerifyResetOtpBody, request: Request, db: AsyncSession = Depends(get_db),
+):
+    """TEMP (owner order 2026-11-27): verify the 8-digit reset code
+    issued by POST /v1/auth/forgot-password. On success the code is
+    consumed and a 60-minute reset token is issued for POST
+    /v1/auth/reset-password. Error shapes mirror verify-otp
+    (invalid_code / expired_code / too_many_attempts)."""
+    session, _ = await get_session_and_user(request, db)
+    require_csrf(request, session)
+    rate_limit_or_429(ip_key(request, "verify-reset-otp"), 10, 900, "verification code")
+    email = normalize_email(body.email)
+    code = (body.code or "").strip()
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if user is None or user.deleted_at is not None:
+        raise api_error(400, "invalid_code",
+                        "No reset code is active for this email. Request a new code.",
+                        "Request a new code and try again.")
+    if user.banned:
+        raise api_error(403, "account_banned",
+                        f"Your account is banned. {user.ban_reason or ''}".strip(),
+                        "Contact support if you think this is a mistake.")
+    if len(code) != 8 or not code.isdigit():
+        raise api_error(400, "invalid_code",
+                        "Enter the 8-digit code shown on the reset screen.",
+                        "Enter all 8 digits.")
+    record = await _active_otp(db, user, purpose="reset")
+    if record is None:
+        raise api_error(400, "invalid_code",
+                        "No reset code is active for this email. Request a new code.",
+                        "Request a new code and try again.")
+    if record.attempts >= OTP_MAX_ATTEMPTS:
+        record.used_at = _now()
+        await db.commit()
+        raise api_error(400, "too_many_attempts",
+                        "Too many wrong attempts. This code is void — request a new one.",
+                        "Request a new code.")
+    if (ensure_aware(record.expires_at) or _now()) <= _now():
+        record.used_at = _now()
+        await db.commit()
+        raise api_error(400, "expired_code",
+                        "This code has expired. Request a new one.",
+                        "Request a new code.")
+    if not passwords.constant_time_equal(passwords.hash_token(code), record.code_hash):
+        record.attempts += 1
+        await db.commit()
+        raise api_error(400, "invalid_code",
+                        "That code is not correct. Check the code and try again.",
+                        "Check the code and try again.")
+    record.used_at = _now()
+    token = await create_email_token(db, user, "reset", 60)
+    return {"ok": True, "reset_token": token}
+
+
 @router.post("/resend-otp")
 async def resend_otp(
     body: ResendOtpBody, request: Request, db: AsyncSession = Depends(get_db),
@@ -810,6 +901,7 @@ async def resend_otp(
     recent = await db.execute(
         select(EmailOtp).where(
             EmailOtp.user_id == user.id,
+            EmailOtp.purpose == "verify",
             EmailOtp.created_at >= _now() - timedelta(seconds=OTP_RESEND_COOLDOWN_SECONDS),
         ).order_by(EmailOtp.created_at.desc())
     )

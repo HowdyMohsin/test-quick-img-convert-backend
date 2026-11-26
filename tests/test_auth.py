@@ -163,7 +163,7 @@ def test_register_requires_terms(env_client):
 
 def test_register_rejects_short_common_and_too_long_passwords(env_client):
     c = env_client
-    for bad in ["short1234", "password123", "1234567890", "x" * 129]:
+    for bad in ["short12", "password123", "1234567890", "x" * 129]:
         r = register(c, email=f"u{len(bad)}-{bad[:4]}@example.com", password=bad)
         assert r.status_code == 400, (bad, r.text)
         assert r.json()["error"]["code"] == "weak_password"
@@ -171,7 +171,7 @@ def test_register_rejects_short_common_and_too_long_passwords(env_client):
 
 def test_password_length_boundaries(env_client):
     c = env_client
-    assert register(c, email="ten@example.com", password="Zx9!qwerty").status_code == 200
+    assert register(c, email="eight@example.com", password="eight888").status_code == 200
     assert register(c, email="max@example.com", password="A" * 128).status_code == 200
 
 
@@ -239,11 +239,100 @@ def test_banned_user_blocked_on_login_and_api(env_client):
 
 # ---------------------------------------------------------------- forgot / reset / verify
 
-def test_forgot_password_always_same_message(env_client):
+def test_forgot_password_unknown_email(env_client):
+    # TEMP flow (owner order 2026-11-27): an unknown email gets 400
+    # account_not_found so the frontend knows not to advance to the
+    # OTP step (the old flow always returned the same 200 message).
     c = env_client
     r = post(c, "/v1/auth/forgot-password", {"email": "ghost@example.com"})
-    assert r.status_code == 200
-    assert r.json()["message"] == "If that email exists, we sent a reset link."
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "account_not_found"
+    assert r.json()["error"]["message"] == "No account found for this email."
+
+
+def test_forgot_password_returns_8_digit_code(env_client):
+    # TEMP flow: a known email gets an 8-digit code back in the
+    # response (the frontend displays it); no reset-link email token
+    # is created at all.
+    c = env_client
+    assert register(c).status_code == 200
+    r = post(c, "/v1/auth/forgot-password", {"email": "alice@example.com"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    code = body["code"]
+    assert len(code) == 8 and code.isdigit(), body
+
+    def _count(s):
+        from app.models import EmailOtp, EmailToken
+        return (
+            s.query(EmailOtp).filter_by(purpose="reset").count(),
+            s.query(EmailToken).filter_by(kind="reset").count(),
+        )
+    out = []
+    db_write(c.db_path, lambda s: out.append(_count(s)))
+    assert out[0] == (1, 0)  # one reset code stored, no link token
+
+
+def test_verify_reset_otp_flow_resets_password(env_client):
+    c = env_client
+    assert register(c).status_code == 200
+    code = post(c, "/v1/auth/forgot-password",
+                {"email": "alice@example.com"}).json()["code"]
+    r = post(c, "/v1/auth/verify-reset-otp",
+             {"email": "alice@example.com", "code": code})
+    assert r.status_code == 200, r.text
+    token = r.json()["reset_token"]
+    assert token
+    r2 = post(c, "/v1/auth/reset-password",
+              {"token": token, "password": "reset password 99"})
+    assert r2.status_code == 200, r2.text
+    # The reset token is single-use, and the new password works.
+    r3 = post(c, "/v1/auth/reset-password",
+              {"token": token, "password": "another new password"})
+    assert r3.status_code == 400
+    from app.main import create_app
+
+    fresh = TestClient(create_app())
+    assert post(fresh, "/v1/auth/login",
+                {"email": "alice@example.com",
+                 "password": "reset password 99"}).status_code == 200
+
+
+def test_verify_reset_otp_wrong_and_expired(env_client):
+    from datetime import datetime, timedelta, timezone
+
+    c = env_client
+    assert register(c).status_code == 200
+    code = post(c, "/v1/auth/forgot-password",
+                {"email": "alice@example.com"}).json()["code"]
+    wrong = "00000000" if code != "00000000" else "11111111"
+    r = post(c, "/v1/auth/verify-reset-otp",
+             {"email": "alice@example.com", "code": wrong})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_code"
+    # Expire the code; the right code is then refused as expired.
+    def _expire(s):
+        from app.models import EmailOtp
+        row = (s.query(EmailOtp).filter_by(purpose="reset")
+               .order_by(EmailOtp.created_at.desc()).first())
+        row.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db_write(c.db_path, _expire)
+    r2 = post(c, "/v1/auth/verify-reset-otp",
+              {"email": "alice@example.com", "code": code})
+    assert r2.status_code == 400
+    assert r2.json()["error"]["code"] == "expired_code"
+
+
+def test_password_minimum_is_8(env_client):
+    # Owner order 2026-11-27: minimum 8 (was 10).
+    c = env_client
+    r = register(c, password="short12")  # 7 characters
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "weak_password"
+    assert "at least 8" in r.json()["error"]["message"]
+    r2 = register(c, email="bob@example.com", password="eight888")  # 8 characters
+    assert r2.status_code == 200, r2.text
 
 
 def test_reset_password_flow(env_client):

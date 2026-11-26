@@ -16,9 +16,9 @@ Rules implemented here (admin-only, do NOT apply to user accounts):
   by ``GET /admin/auth/csrf`` and required as ``X-CSRF-Token`` on every
   mutation.
 * Forced password change at first login (``must_change_password``); the
-  admin minimum is **12 characters** (spec §13.2). This 12-char rule is
-  ADMIN-ONLY; user accounts keep the v5 §8.1 rule (10-128 chars) owned by
-  ``app.passwords``.
+  admin minimum is **8 characters** (owner order 2026-11-27, overriding
+  spec §13.2's 12). This 8-char rule is ADMIN-ONLY; user accounts keep
+  the rule owned by ``app.passwords`` (8-128 chars).
 * Optional TOTP (RFC 6238, 30 s step, ±1 window) with recovery codes.
   The TOTP secret is encrypted with AES-GCM (key derived from
   ``APP_SECRET`` via ``app.security`` when available, local AES-GCM
@@ -82,7 +82,7 @@ ADMIN_COOKIE = "qic_admin"
 SESSION_DAYS = 7
 MAX_LOGIN_ATTEMPTS = 8
 LOCKOUT_WINDOW_SECONDS = 5 * 60
-ADMIN_MIN_PASSWORD_LEN = 12
+ADMIN_MIN_PASSWORD_LEN = 8
 ADMIN_MAX_PASSWORD_LEN = 128
 TOTP_STEP_SECONDS = 30
 TOTP_WINDOW = 1
@@ -222,7 +222,8 @@ def verify_password(stored: Optional[str], password: str) -> bool:
 
 
 def validate_admin_password(password: str) -> Optional[str]:
-    """Admin-only password rule (spec §13.2): minimum 12 characters.
+    """Admin-only password rule: minimum 8 characters (owner order
+    2026-11-27, overriding spec §13.2's 12).
 
     Returns an error string, or None when the password is acceptable.
     No composition rules, no maximum below the 128-char v5 cap.
@@ -1040,7 +1041,7 @@ async def change_password(
     error = validate_admin_password(body.new_password)
     if error:
         raise admin_error(422, "admin_password_too_short", error,
-                          "Use a password of at least 12 characters.")
+                          "Use a password of at least 8 characters.")
     before = {"must_change_password": bool(admin.must_change_password)}
     admin.password_hash = hash_password(body.new_password)
     admin.must_change_password = False
@@ -1185,7 +1186,7 @@ async def reset_password(body: ResetPasswordBody, db: AsyncSession = Depends(get
     error = validate_admin_password(body.new_password)
     if error:
         raise admin_error(422, "admin_password_too_short", error,
-                          "Use a password of at least 12 characters.")
+                          "Use a password of at least 8 characters.")
     admin = await db.get(AdminUser, admin_id)
     if admin is None or not getattr(admin, "active", True):
         raise admin_error(

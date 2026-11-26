@@ -15,6 +15,7 @@ import os
 import sys
 
 from . import passwords
+from .admin_auth import ADMIN_MIN_PASSWORD_LEN
 from .deps import get_engine, get_sessionmaker, get_settings, reset_engine, reset_settings
 from .models import AdminUser, Base, PaymentProvider
 from .seed import seed as run_seed
@@ -49,10 +50,10 @@ async def cmd_create_admin(args) -> int:
         if password != confirm:
             print("create-admin: passwords do not match", file=sys.stderr)
             return 2
-    # Admin passwords: v5 section 13.2 requires a minimum of 12
-    # characters at first login; enforce it here too.
-    if len(password) < 12:
-        print("create-admin: admin password must be at least 12 characters", file=sys.stderr)
+    # Admin passwords: minimum 8 characters (owner order 2026-11-27,
+    # overriding v5 section 13.2's 12); enforce it here too.
+    if len(password) < ADMIN_MIN_PASSWORD_LEN:
+        print(f"create-admin: admin password must be at least {ADMIN_MIN_PASSWORD_LEN} characters", file=sys.stderr)
         return 2
     error = passwords.validate_password(password)
     if error:
@@ -102,8 +103,8 @@ async def cmd_bootstrap_admin(_args) -> int:
     if "@" not in email:
         print("bootstrap-admin: ADMIN_EMAIL must be a valid email address", file=sys.stderr)
         return 2
-    if len(password) < 12:
-        print("bootstrap-admin: ADMIN_PASSWORD must be at least 12 characters", file=sys.stderr)
+    if len(password) < ADMIN_MIN_PASSWORD_LEN:
+        print(f"bootstrap-admin: ADMIN_PASSWORD must be at least {ADMIN_MIN_PASSWORD_LEN} characters", file=sys.stderr)
         return 2
     error = passwords.validate_password(password)
     if error:

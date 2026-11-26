@@ -1165,7 +1165,7 @@ async def create_team_member(
     error = validate_admin_password(body.password)
     if error:
         raise admin_error(422, "admin_password_too_short", error,
-                          "Use a password of at least 12 characters.")
+                          "Use a password of at least 8 characters.")
     existing = (
         await db.execute(select(AdminUser).where(func.lower(AdminUser.email) == email))
     ).scalar_one_or_none()

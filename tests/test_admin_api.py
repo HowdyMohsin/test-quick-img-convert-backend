@@ -265,7 +265,7 @@ def test_team_create_accepts_display_name_and_dict_permissions(client):
         headers=headers,
     )
     assert resp.status_code == 422
-    assert "at least 12" in resp.json()["error"]["message"]
+    assert "at least 8" in resp.json()["error"]["message"]
 
 
 def test_settings_general_and_limits(client):

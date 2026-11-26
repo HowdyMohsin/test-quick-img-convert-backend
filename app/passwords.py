@@ -4,17 +4,21 @@ ISOLATED VALIDATOR: this module is the ONLY place the password rule
 lives. Nothing else in the codebase may hard-code a password length or
 a common-password check; import from here.
 
-Rule (v5 section 8.1): 10-128 characters, checked against a bundled
-list of the 10,000 most common passwords, no forced composition rules.
+Rule (owner order 2026-11-27): 8-128 characters, checked against a
+bundled list of the 10,000 most common passwords, no forced
+composition rules. The owner ordered the minimum 8 on 2026-11-27,
+overriding the v5 10-128 spec and the earlier no-fixed-length request.
 Hash with Argon2id (~64 MiB memory, 3 iterations, 1 lane, tuned to
 roughly 100 ms), constant-time verify, rehash on login when the
 parameters change.
 
 CONFLICT FLAG (recorded for the owner, not silently resolved): the
 owner earlier asked for NO fixed password length. The v5 spec
-overrides that with an explicit 10-128 rule, so this build implements
-the v5 rule exactly as specified, isolated in this one module, so the
-rule can be changed in one place if the owner confirms otherwise.
+overrode that with an explicit 10-128 rule, and the owner then
+ordered minimum 8 on 2026-11-27, overriding both. This build
+implements the 8-128 rule exactly as specified, isolated in this one
+module, so the rule can be changed in one place if the owner confirms
+otherwise.
 
 Common-password list
 ---------------------
@@ -41,7 +45,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from argon2.low_level import Type
 
-MIN_LENGTH = 10
+MIN_LENGTH = 8
 MAX_LENGTH = 128
 
 # Argon2id parameters: ~64 MiB, 3 iterations, 1 lane (~100 ms).

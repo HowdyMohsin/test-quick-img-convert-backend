@@ -97,23 +97,23 @@ def test_forced_password_change_flow(client):
     assert resp.json()["error"]["code"] == "password_change_required"
     # /me still works while the change is pending.
     assert client.get("/admin/auth/me").status_code == 200
-    # 11 characters is too short for admins.
+    # 7 characters is too short for admins.
     resp = client.post(
         "/admin/auth/change-password",
-        json={"current_password": FORCED_PASSWORD, "new_password": "ShortPass11"},
+        json={"current_password": FORCED_PASSWORD, "new_password": "Short12"},
     )
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "admin_password_too_short"
-    # Exactly 12 characters is accepted.
+    # Exactly 8 characters is accepted.
     resp = client.post(
         "/admin/auth/change-password",
-        json={"current_password": FORCED_PASSWORD, "new_password": "NewAdminPass"},
+        json={"current_password": FORCED_PASSWORD, "new_password": "NewAdmin"},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["changed"] is True
     # Password change revokes the session: a fresh login is required.
     assert client.get("/admin/auth/me").status_code == 401
-    resp = login_as(client, FORCED_EMAIL, "NewAdminPass")
+    resp = login_as(client, FORCED_EMAIL, "NewAdmin")
     assert resp.json()["must_change_password"] is False
     assert client.get("/admin/dashboard").status_code == 200
 
