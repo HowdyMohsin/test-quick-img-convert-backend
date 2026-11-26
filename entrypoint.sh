@@ -23,6 +23,10 @@ case "$1" in
     # Never blocks the server from starting — a bad admin config is
     # reported by the command itself, and the API still comes up.
     python -m app.cli bootstrap-admin || true
+    # Seed default plans/providers/ad slots/templates (idempotent —
+    # existing rows are never overwritten). Without this the plans table
+    # stays empty and the admin Plans page shows "No plans yet".
+    python -m app.cli seed || true
     ;;
 esac
 
