@@ -326,6 +326,17 @@ def normalize_settings(to_slug: str, settings: dict | None) -> dict:
             del merged["target_size_kb"]
     if "strip_gps" in merged:
         merged["strip_gps"] = bool(merged["strip_gps"])
+    if "compress_enabled" in merged:
+        merged["compress_enabled"] = bool(merged["compress_enabled"])
+    if "strip_ai_data" in merged:
+        merged["strip_ai_data"] = bool(merged["strip_ai_data"])
+    # Compress toggle (user order 2026-11-26): OFF means NO compression —
+    # the 0-9 level is forced to 0 whatever level the caller sent (PNG
+    # compress_level, FLAC compression_level). Lossy quality is a
+    # separate setting and is untouched. Absent (the default) means ON:
+    # current behaviour unchanged.
+    if merged.get("compress_enabled") is False:
+        merged["compression"] = 0
     return merged
 
 
@@ -441,9 +452,166 @@ def _exif_without_gps(exif_bytes: bytes) -> bytes:
         return exif_bytes
 
 
+# --- AI data remover (user order 2026-11-26) -------------------------------
+# An AI image's "credit" lives in its metadata, and re-encoding already
+# drops most of it on the Pillow path (PNG text chunks, XMP packets and
+# JUMBF segments are never copied to the output). What DOES survive a
+# Pillow re-encode is EXIF (passed through for JPG/TIFF when the user
+# keeps metadata), and on the libvips path metadata is kept by default
+# — so the targeted removal below covers both. What it strips, and
+# ONLY that:
+#   * PNG text chunks whose KEYS are the AI data — Stable Diffusion
+#     "parameters", ComfyUI "prompt" / "workflow". Any other chunk
+#     (Comment, Software, ...) stays.
+#   * XMP packets that carry AI fields — a generator name, a prompt
+#     hash, or an IPTC DigitalSourceType with an algorithmic-media
+#     value (Iptc4xmpExt:DigitalSourceType). A clean XMP packet stays.
+#     DigitalSourceType has NO IIM dataset number (IIM 4.2) — it lives
+#     in XMP, so there is nothing to target inside a legacy IPTC
+#     (IIM) block; the block is left alone.
+#   * C2PA Content Credentials manifests (JUMBF box) — dropped outright.
+#   * EXIF Software / ImageDescription, but only when they name a
+#     known AI generator. Make, Model and every other tag stay.
+# What it does NOT do (honest limit, never claimed otherwise): invisible
+# PIXEL watermarks — Google SynthID, StableSignature, TreeRing,
+# TrustMark — live in the pixels, survive re-encoding, cropping and
+# resizing, and need diffusion-based regeneration (GPU) to remove.
+# Visible watermarks drawn into the picture also stay.
+AI_GENERATOR_MARKERS = (
+    "stable diffusion", "midjourney", "dall", "dalle", "comfyui",
+    "firefly", "leonardo", "sdxl", "flux", "imagen", "openai", "chatgpt",
+    "runway", "pika", "luma", "ideogram", "nightcafe", "dreamstudio",
+    "novelai", "civitai", "invokeai", "automatic1111", "fooocus",
+    "trainedalgorithmic", "algorithmicmedia", "ai-generated",
+    "ai generated", "generative ai", "synthid",
+)
+
+# PNG text-chunk keys that ARE the AI data (Stable Diffusion writes
+# "parameters", ComfyUI writes "prompt" / "workflow").
+AI_TEXT_CHUNK_KEYS = frozenset({"parameters", "prompt", "workflow", "sd-metadata"})
+
+EXIF_SOFTWARE_TAG = 0x0131
+EXIF_DESCRIPTION_TAG = 0x010E
+
+
+def _contains_ai_marker(value: str) -> bool:
+    """True when a metadata string names an AI generator or carries an
+    AI-credit value (prompt hash, algorithmic-media source type)."""
+    lowered = value.lower()
+    return any(marker in lowered for marker in AI_GENERATOR_MARKERS)
+
+
+def _exif_without_ai(exif_bytes: bytes) -> bytes:
+    """EXIF bytes with AI-generator Software / ImageDescription removed;
+    every other tag kept. Parsing failure returns the original bytes —
+    AI removal must never break a conversion."""
+    try:
+        exif = Image.Exif()
+        exif.load(exif_bytes)
+        changed = False
+        for tag in (EXIF_SOFTWARE_TAG, EXIF_DESCRIPTION_TAG):
+            value = exif.get(tag)
+            if isinstance(value, str) and _contains_ai_marker(value):
+                del exif[tag]
+                changed = True
+        return exif.tobytes() if changed else exif_bytes
+    except Exception:  # noqa: BLE001 - keep original EXIF on any failure
+        return exif_bytes
+
+
+def _strip_ai_metadata_pillow(img: Image.Image, settings: dict) -> None:
+    """Targeted AI-metadata removal on a loaded Pillow image, in place.
+
+    Only runs when settings["strip_ai_data"] is true. Cleans the
+    image's info dict (which survives transpose/resize — the
+    PngImageFile .text dict does not) and .text when present:
+    AI text-chunk keys go, other chunks stay; an XMP packet goes only
+    when it carries AI fields; EXIF Software / ImageDescription go
+    only when they name an AI generator. ICC profile, DPI and every
+    other tag stay. Never raises.
+    """
+    if not settings.get("strip_ai_data"):
+        return
+    try:
+        info = img.info
+        for key in list(info.keys()):
+            if key.lower() in AI_TEXT_CHUNK_KEYS:
+                del info[key]
+        text = getattr(img, "text", None)
+        if isinstance(text, dict):
+            for key in list(text.keys()):
+                if key.lower() in AI_TEXT_CHUNK_KEYS:
+                    del text[key]
+        for key in ("XML:com.adobe.xmp", "xmp"):
+            value = info.get(key)
+            if isinstance(value, (bytes, bytearray)):
+                value = bytes(value).decode("utf-8", "ignore")
+            if isinstance(value, str) and _contains_ai_marker(value):
+                del info[key]
+        if isinstance(text, dict):
+            for key in list(text.keys()):
+                if key.lower() == "xml:com.adobe.xmp":
+                    raw = text[key]
+                    packet = getattr(raw, "text", raw)
+                    if isinstance(packet, str) and _contains_ai_marker(packet):
+                        del text[key]
+        exif_bytes = info.get("exif")
+        if isinstance(exif_bytes, (bytes, bytearray)):
+            info["exif"] = _exif_without_ai(bytes(exif_bytes))
+    except Exception:  # noqa: BLE001 - AI removal must never break a conversion
+        pass
+
+
+def _strip_ai_metadata_vips(img):
+    """Targeted AI-metadata removal on the libvips path (Docker only;
+    libvips is absent on this machine, so this runs untested here and
+    is exercised by the live Docker build).
+
+    libvips keeps metadata by default, so removals happen on the image
+    object before the write: JUMBF / C2PA fields go outright, XMP goes
+    only when it carries AI fields, EXIF Software / ImageDescription
+    go only when they name an AI generator, and PNG text-chunk fields
+    go by key. The libvips "iptc" field is left alone — IPTC
+    DigitalSourceType has no IIM dataset number, it lives in the XMP
+    packet (see the note above). Every removal is best-effort; a field
+    that cannot go stays, and a conversion never fails here.
+    """
+    try:
+        fields = list(img.get_fields())
+    except Exception:  # noqa: BLE001
+        return img
+    for field in fields:
+        low = field.lower()
+        try:
+            drop = False
+            if "jumb" in low or "c2pa" in low:
+                drop = True
+            elif low in AI_TEXT_CHUNK_KEYS:
+                drop = True
+            elif low == "xmp":
+                value = img.get(field)
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", "ignore")
+                drop = isinstance(value, str) and _contains_ai_marker(value)
+            elif low in ("exif-ifd0-software", "exif-ifd0-imagedescription"):
+                value = img.get(field)
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", "ignore")
+                drop = isinstance(value, str) and _contains_ai_marker(value)
+            if drop:
+                result = img.remove(field)
+                if result is not None:
+                    img = result
+        except Exception:  # noqa: BLE001 - a field that cannot go stays
+            pass
+    return img
+
+
 def _encode_raster_image(img: Image.Image, to_slug: str, settings: dict,
                          dst: Path, frames: list[Image.Image] | None = None) -> dict:
     """Encode an already-loaded Pillow image. Returns output info."""
+    if settings.get("strip_ai_data"):
+        _strip_ai_metadata_pillow(img, settings)
     quality = int(settings.get("quality", TARGET_DEFAULTS.get(to_slug, {}).get("quality", 85)))
     if to_slug in ("jpg", "bmp"):
         img = _flatten(img, settings)
@@ -471,7 +639,17 @@ def _encode_raster_image(img: Image.Image, to_slug: str, settings: dict,
     elif to_slug == "avif":
         save_kwargs = {"quality": quality, "speed": int(settings.get("speed", 6))}
     elif to_slug == "png":
-        save_kwargs = {"compress_level": int(settings.get("compression", 6)), "optimize": True}
+        if settings.get("compress_enabled") is False:
+            # Compress toggle OFF means NO compression: level 0 alone is
+            # not enough — Pillow's optimize=True makes the encoder
+            # ignore compress_level (it re-encodes at its own level),
+            # so optimize must go too, otherwise "off" would still come
+            # out compressed. (The same optimize=True also makes the
+            # 0-9 slider itself a no-op on this path today — a
+            # pre-existing quirk, out of scope for the toggle.)
+            save_kwargs = {"compress_level": 0, "optimize": False}
+        else:
+            save_kwargs = {"compress_level": int(settings.get("compression", 6)), "optimize": True}
     elif to_slug == "tiff":
         save_kwargs = {}
         if not settings.get("strip_metadata", True):
@@ -571,6 +749,11 @@ def _convert_raster_vips(src: Path, to_slug: str, settings: dict, dst: Path) -> 
                         img = result
                 except Exception:  # noqa: BLE001 - a field that cannot go stays
                     pass
+    # AI data remover: targeted removal of AI credit metadata only
+    # (C2PA/JUMBF, AI-carrying XMP, AI-named EXIF Software); everything
+    # else stays, and pixel watermarks cannot be removed by re-encoding.
+    if settings.get("strip_ai_data"):
+        img = _strip_ai_metadata_vips(img)
     write_opts: dict = {}
     if to_slug == "jpg":
         write_opts = {"Q": quality, "interlace": bool(settings.get("progressive", True))}

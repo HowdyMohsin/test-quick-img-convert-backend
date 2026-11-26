@@ -30,6 +30,7 @@ ANONYMOUS_LIMITS = {
     "vid_mb": 500, "vid_min": 30, "parallel": 1, "priority": False, "ads": True,
     "editor": False,
     "gps_remover": False, "compare": False, "batch_rename": False, "target_size": False,
+    "compress_toggle": False, "ai_data_remover": False,
 }
 
 PLANS = [
@@ -40,6 +41,7 @@ PLANS = [
             "vid_mb": 500, "vid_min": 30, "parallel": 2, "priority": False, "ads": True,
             "editor": False,
             "gps_remover": False, "compare": False, "batch_rename": False, "target_size": False,
+            "compress_toggle": False, "ai_data_remover": False,
         },
         "featured": 0, "sort": 1,
     },
@@ -50,6 +52,7 @@ PLANS = [
             "vid_mb": 1024, "vid_min": 60, "parallel": 3, "priority": False, "ads": False,
             "editor": True,
             "gps_remover": True, "compare": True, "batch_rename": True, "target_size": True,
+            "compress_toggle": True, "ai_data_remover": True,
         },
         "featured": 1, "sort": 2,
     },
@@ -60,6 +63,7 @@ PLANS = [
             "vid_mb": 4096, "vid_min": 120, "parallel": 6, "priority": True, "ads": False,
             "editor": True,
             "gps_remover": True, "compare": True, "batch_rename": True, "target_size": True,
+            "compress_toggle": True, "ai_data_remover": True,
         },
         "featured": 0, "sort": 3,
     },

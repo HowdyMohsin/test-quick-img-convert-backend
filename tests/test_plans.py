@@ -91,6 +91,7 @@ def test_seeded_plan_limits(env_client):
         "vid_mb": 500, "vid_min": 30, "parallel": 2, "priority": False, "ads": True,
         "editor": False,
         "gps_remover": False, "compare": False, "batch_rename": False, "target_size": False,
+        "compress_toggle": False, "ai_data_remover": False,
     }
     assert plans["anonymous"]["limits"]["editor"] is False
     assert plans["basic"]["limits"]["editor"] is True
@@ -99,14 +100,20 @@ def test_seeded_plan_limits(env_client):
     assert plans["free"]["limits"]["compare"] is False
     assert plans["free"]["limits"]["batch_rename"] is False
     assert plans["free"]["limits"]["target_size"] is False
+    assert plans["free"]["limits"]["compress_toggle"] is False
+    assert plans["free"]["limits"]["ai_data_remover"] is False
     assert plans["basic"]["limits"]["gps_remover"] is True
     assert plans["basic"]["limits"]["compare"] is True
     assert plans["basic"]["limits"]["batch_rename"] is True
     assert plans["basic"]["limits"]["target_size"] is True
+    assert plans["basic"]["limits"]["compress_toggle"] is True
+    assert plans["basic"]["limits"]["ai_data_remover"] is True
     assert plans["pro"]["limits"]["gps_remover"] is True
     assert plans["pro"]["limits"]["compare"] is True
     assert plans["pro"]["limits"]["batch_rename"] is True
     assert plans["pro"]["limits"]["target_size"] is True
+    assert plans["pro"]["limits"]["compress_toggle"] is True
+    assert plans["pro"]["limits"]["ai_data_remover"] is True
     assert plans["basic"]["price_cents"] == 400
     assert plans["basic"]["price_yearly_cents"] == 4000
     assert plans["basic"]["limits"]["daily"] == 100
@@ -141,15 +148,16 @@ def test_seed_is_idempotent(env_client):
 
 
 def test_seed_backfills_new_flag_keys_on_existing_rows(env_client):
-    # Regression: plan rows seeded BEFORE a flag existed (e.g. the four
-    # converter-feature flags, added in 2bf8bee) have no such key in
+    # Regression: plan rows seeded BEFORE a flag existed (e.g. the six
+    # converter-feature flags) have no such key in
     # their stored limits JSON, so the admin panel — which reads the raw
     # row — showed every flag OFF for Basic/Pro on the live database,
     # even though a fresh seed is correct. Seed must add ABSENT keys
     # from the seeded defaults on existing rows, and must never
     # overwrite a value already present (an admin's explicit False).
     c = env_client
-    flags = ("gps_remover", "compare", "batch_rename", "target_size")
+    flags = ("gps_remover", "compare", "batch_rename", "target_size",
+             "compress_toggle", "ai_data_remover")
 
     def _strip(session):
         from app.models import Plan, SiteSetting
@@ -194,11 +202,13 @@ def test_seed_backfills_new_flag_keys_on_existing_rows(env_client):
         assert plans["anonymous"]["limits"][key] is False
         assert plans["pro"]["limits"][key] is True
     # Basic: the admin's explicit gps_remover=False survives; the
-    # other three absent keys are backfilled True.
+    # other five absent keys are backfilled True.
     assert plans["basic"]["limits"]["gps_remover"] is False
     assert plans["basic"]["limits"]["compare"] is True
     assert plans["basic"]["limits"]["batch_rename"] is True
     assert plans["basic"]["limits"]["target_size"] is True
+    assert plans["basic"]["limits"]["compress_toggle"] is True
+    assert plans["basic"]["limits"]["ai_data_remover"] is True
 
 
 # ---------------------------------------------------------------- PKR + coupons

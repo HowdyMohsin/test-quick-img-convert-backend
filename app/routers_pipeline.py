@@ -303,19 +303,12 @@ async def upload_file(request: Request, file: UploadFile = File(...),
 async def convert(request: Request, body: ConvertBody,
                   owner: dict = Depends(_resolve_owner)):
     store = get_store(request)
-    # Suspense lock (user order 2026-11-26): converting needs a signed-in
-    # account. Anonymous visitors can upload and preview, but the convert
-    # call itself is refused with a friendly sign-in message — never a
-    # raw code. The UI locks "Convert to" + the Convert button for
-    # anonymous users with files staged; this is the API backstop, so the
-    # rule cannot be bypassed from the browser console. Consequence:
-    # anonymous users can no longer convert without an account — the
-    # anonymous 5/day is upload-only preview until they sign in free.
-    if owner["user_id"] is None:
-        return error_response(PipelineError(
-            "signin_required", "Sign in — it's free — to convert your files.",
-            "Create a free account and convert right away; no email verification needed.",
-            status=403))
+    # Suspense lock REMOVED on user order 2026-11-26 22:52 ("lakin free
+    # user nhi aye gaa, convert to ko open karo" — the lock drove free
+    # users away): anonymous visitors convert again under the normal
+    # anonymous quota (5/day, parallel 1), exactly as before the lock
+    # (commit 4b894ff). The Convert-from lock is a frontend rule and is
+    # untouched; plan-gated settings below are the API backstop.
     # Plan-gated conversion settings (backstop for the UI gating): a plan
     # without the flag cannot smuggle the option through the API.
     _settings = body.settings or {}
@@ -326,6 +319,14 @@ async def convert(request: Request, body: ConvertBody,
     if _settings.get("target_size_kb") and not owner["limits"].get("target_size", False):
         return error_response(PipelineError(
             "feature_locked", "Target file size needs Basic or Pro.",
+            "See /pricing to upgrade", status=403))
+    if _settings.get("compress_enabled") is False and not owner["limits"].get("compress_toggle", False):
+        return error_response(PipelineError(
+            "feature_locked", "Turning compression off needs Basic or Pro.",
+            "See /pricing to upgrade", status=403))
+    if _settings.get("strip_ai_data") and not owner["limits"].get("ai_data_remover", False):
+        return error_response(PipelineError(
+            "feature_locked", "Removing AI data needs Basic or Pro.",
             "See /pricing to upgrade", status=403))
     try:
         # Sync store, off the event loop (see the upload endpoint).
@@ -461,14 +462,17 @@ async def editor_access_endpoint(owner: dict = Depends(_resolve_owner)):
 @router.get("/features")
 async def features_endpoint(owner: dict = Depends(_resolve_owner)):
     """Plan-gated converter features, same limits-dict pattern as the
-    editor lock: GPS remover, compare slider, batch rename, target size.
-    Anonymous and free get them off; basic and pro get them on — the admin
-    can flip each per plan from Plans (limits)."""
+    editor lock: GPS remover, compare slider, batch rename, target size,
+    compress toggle, AI data remover. Anonymous and free get them off;
+    basic and pro get them on — the admin can flip each per plan from
+    Plans (limits)."""
     limits = owner["limits"]
     return {"gps_remover": bool(limits.get("gps_remover", False)),
             "compare": bool(limits.get("compare", False)),
             "batch_rename": bool(limits.get("batch_rename", False)),
-            "target_size": bool(limits.get("target_size", False))}
+            "target_size": bool(limits.get("target_size", False)),
+            "compress_toggle": bool(limits.get("compress_toggle", False)),
+            "ai_data_remover": bool(limits.get("ai_data_remover", False))}
 
 
 @router.get("/editor/file/{upload_id}")

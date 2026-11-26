@@ -2,6 +2,7 @@
 download auth. Tests needing an engine that is absent here are SKIPPED
 (pytest.mark.skipif on the live probe) — a conversion is never faked."""
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -46,16 +47,35 @@ def make_svg_bytes() -> bytes:
 
 @pytest.fixture()
 def app_and_client(tmp_path):
-    app = FastAPI()
-    app.include_router(router)
-    app.state.pipeline_store = MemoryStore()
-    app.state.data_dir = tmp_path / "data"
-    app.state.plan_resolver = lambda owner: "anonymous"
-    # Signed-in by default (suspense lock, user order 2026-11-26):
-    # converting needs an account, so convert tests run as a user.
-    # Tests for the anonymous behaviour clear this (set it to None).
-    app.state.test_user_id = "test-user-1"
-    return app, TestClient(app), app.state.pipeline_store
+    from app.deps import reset_settings
+
+    old_site_url = os.environ.get("SITE_URL")
+    # Anonymous flows need the device cookie round-tripped: the code
+    # default SITE_URL is the https Vercel URL, which makes is_https
+    # True, which marks the cookie secure — and a secure cookie is
+    # never sent back over the TestClient's http://testserver, so each
+    # anonymous request would get a fresh device id and uploads would
+    # belong to "someone else" (same pattern as test_quota.py).
+    os.environ["SITE_URL"] = "http://localhost:3000"
+    reset_settings()
+    try:
+        app = FastAPI()
+        app.include_router(router)
+        app.state.pipeline_store = MemoryStore()
+        app.state.data_dir = tmp_path / "data"
+        app.state.plan_resolver = lambda owner: "anonymous"
+        # Signed-in by default: most convert tests run as a user. Tests for
+        # the anonymous behaviour clear this (set it to None) — anonymous
+        # visitors convert under the normal anonymous quota (5/day), the
+        # suspense lock having been removed on user order 2026-11-26.
+        app.state.test_user_id = "test-user-1"
+        yield app, TestClient(app), app.state.pipeline_store
+    finally:
+        if old_site_url is None:
+            os.environ.pop("SITE_URL", None)
+        else:
+            os.environ["SITE_URL"] = old_site_url
+        reset_settings()
 
 
 @pytest.fixture()
@@ -128,21 +148,27 @@ def test_convert_png_to_jpg_end_to_end(app_and_client, worker):
     assert dl.content[:2] == b"\xff\xd8"
 
 
-def test_convert_requires_sign_in_for_anonymous(app_and_client):
-    # Suspense lock (user order 2026-11-26): an anonymous visitor can
-    # upload (upload-only preview) but converting is refused with a
-    # friendly sign-in message — never a raw code.
+def test_convert_allowed_for_anonymous_under_quota(app_and_client, worker):
+    # Suspense lock REMOVED (user order 2026-11-26 22:52): an anonymous
+    # visitor converts again under the normal anonymous quota (5/day,
+    # parallel 1). The worker drains each job so the parallel limit
+    # never trips; the 6th convert of the day hits the daily quota.
     app, client, _ = app_and_client
     app.state.test_user_id = None
+    for _ in range(5):
+        resp = upload(client, make_png_bytes(), "photo.png")
+        assert resp.status_code == 201, resp.text
+        resp = client.post("/v1/convert",
+                           json={"upload_id": resp.json()["id"], "to": "jpg"})
+        assert resp.status_code == 202, resp.text
+        assert resp.json()["status"] == "queued"
+        assert len(worker.run_once()) == 1
     resp = upload(client, make_png_bytes(), "photo.png")
     assert resp.status_code == 201, resp.text
     resp = client.post("/v1/convert",
                        json={"upload_id": resp.json()["id"], "to": "jpg"})
-    assert resp.status_code == 403, resp.text
-    err = resp.json()["error"]
-    assert err["code"] == "signin_required"
-    assert "Sign in" in err["message"]
-    assert "Request failed" not in err["message"]
+    assert resp.status_code == 429, resp.text
+    assert resp.json()["error"]["code"] == "quota_exceeded"
 
 
 def test_download_requires_auth(app_and_client, worker):
