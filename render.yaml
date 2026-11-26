@@ -1,0 +1,65 @@
+# Quick IMG Convert — backend (API) on Render.
+#
+# Blueprint: creates the API web service + a free PostgreSQL database.
+# Deploy: Render dashboard -> New -> Blueprint -> connect this repo.
+# Render prompts for the `sync: false` values when the blueprint is created.
+#
+# Runtime: native Python (NOT Docker). The API lazy-imports the heavy
+# conversion engines (pyvips, rawpy, psd-tools, pypdfium2) inside functions
+# in app/engines.py, so the API boots without libvips/ffmpeg installed;
+# engines that need missing system libraries simply report unhealthy and
+# their pairs degrade. The conversion worker is a separate process and
+# cannot run on Render's free tier (no free background workers), so this
+# blueprint deploys the API only — see README.md.
+#
+# IMPORTANT — DATABASE_URL: Render's database connection string uses the
+# `postgres://` scheme, but this API uses SQLAlchemy's async engine, which
+# requires `postgresql+asyncpg://`. There is no way to wire it automatically
+# in a blueprint, so DATABASE_URL is `sync: false`: paste the database's
+# "External Database URL" from the Render dashboard and change ONLY the
+# scheme at the start, `postgres://` -> `postgresql+asyncpg://`.
+# (Alembic runs the same URL at startup via entrypoint.sh.)
+
+services:
+  - type: web
+    name: quick-img-convert-api
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: ./entrypoint.sh uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_SECRET
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SITE_URL
+        value: https://quick-img-convert-api.onrender.com
+      - key: DATA_DIR
+        value: ./data
+      - key: ENV
+        value: production
+      - key: API_DOCS
+        value: "false"
+      - key: QUOTA_TZ
+        value: Asia/Karachi
+      - key: RETENTION_HOURS
+        value: "24"
+      - key: PKR_PER_USD
+        value: "280"
+      - key: APPROVAL_WINDOW_HOURS
+        value: "24"
+
+databases:
+  - name: quick-img-convert-db
+    plan: free
+    databaseName: qic
+    user: qic

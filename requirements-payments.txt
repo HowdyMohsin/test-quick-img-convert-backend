@@ -1,0 +1,9 @@
+# Addendum to api/requirements.txt — payments/ads backend (owner: payments agent).
+# The core agent owns api/requirements.txt; merge these lines into it.
+# reportlab renders PDF receipts (fpdf2 is the fallback; a minimal built-in
+# PDF writer is the last resort, so receipts work even without either).
+reportlab>=4.2
+# AES-GCM encryption of provider config when app.security is unavailable.
+cryptography>=42
+# Multipart form parsing for manual-submit proof uploads.
+python-multipart>=0.0.9
